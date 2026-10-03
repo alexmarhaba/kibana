@@ -1,0 +1,367 @@
+# AlertZero telemetry
+
+Event-Based Telemetry (EBT) events registered by the `alertzero` plugin. They go through core analytics (`core.analytics`), so opted-out clusters send nothing.
+
+The events are registered in `setup()` inside the `xpack.alertzero.enabled` guard, so with the kill switch off no AlertZero event type exists. See the plugin [README](../../README.md).
+
+Run reliability (started, completed, failed, cancelled, timed out) is not duplicated here. It comes from the Workflows engine's own terminal execution events. Join them to these events through `run_id`, which is the root execution id. AlertZero events cover only what the engine cannot know: domain outcomes (including the Worker's own Investigation closes), settings and daily snapshots.
+
+## Privacy contract
+
+- **No identities.** No event carries a user name, email, role, API key, or anything read from a `KibanaRequest`. The static test in `event_types.test.ts` fails if any file in this directory imports `KibanaRequest` or `ProposalUser`, so audit data stays out by construction. Audit logging is a separate pipeline.
+- **No free text.** Every field is a closed enum, a bounded count, a boolean, a day, or a system-generated id. No field carries titles, summaries, descriptions, comments, rationales, verdict text, error messages, alert content or query content. No field uses the `text` type.
+- **No space ids.** Events carry `is_default_space` instead. This holds only within AlertZero's own events (see "What a join reaches" below).
+- **System ids ship raw.** `run_id` and `execution_id` are generated UUIDs, which the engine already ships. `investigation_id` is the Investigation's Agent Builder conversation id, and the same value already ships raw as Agent Builder `conversation_id`. Most Workers' Investigations get a random id, but two are derived from a customer record. For an Attack Discovery Worker Investigation, the review's `resolve_investigation_id` step (`attack_discovery_review.yaml`) takes the first 120 bits (30 hex characters) of `attack_discovery_id`, which is the attack's `kibana.alert.uuid` (a SHA-256 hex), and sets the UUID version and variant characters to `8`. For a Hunt Worker Investigation, `buildHuntInvestigationConversationId` takes a UUID v5 of the threat report id. Each is a stable id for one customer record (the attack, or the report), the same for every run on it. It names no person and carries no alert content. Workflow ids ship only as a Worker catalog id; anything else is `other`.
+- **Snapshots are cluster-level aggregates.** They are summed across spaces and carry `space_count`, never a per-space breakdown.
+- **Closed schemas.** No field is `pass_through`. In dev mode, a payload with an undeclared key throws, and the schema tests check this.
+- **Never throw.** Every emission goes through `safeReportEvent`, which catches everything and logs at debug level. Emitters report after their write resolves, never inside an optimistic-concurrency callback, and only on a real transition.
+
+### What a join reaches
+
+The ids above add no content of their own, but they join to events other plugins already ship. `run_id` and `execution_id` join to the Workflows engine's own execution events (`workflows_execution_workflow_completed`, `_failed` and `_cancelled`) through `workflowExecutionId`, and those carry the raw `spaceId`, the `workflowId` (for a custom workflow, usually built from the workflow's name), `ruleId` on an alert-triggered run, and the free-text `errorMessage` and `cancellationReason`. `investigation_id` joins to the Agent Builder events on `conversation_id`, including `agent_builder_round_error`, whose `error_message` is truncated to 500 characters. So "no space ids" and "no free text" hold only within AlertZero's own events, not across a join.
+
+The schema tests (`event_types.test.ts`) enforce the following:
+- every field has a description;
+- no field is `text` or `pass_through`;
+- no field name is in the denylist (`user`, `username`, `email`, `name`, `title`, `message`, `rationale`, `comment`, `description`, `space_id`, `spaceId`, `decidedBy`, `executionError`, `actionInput`);
+- this README documents exactly the registered events.
+
+## Module
+
+| File | Contents |
+|---|---|
+| `constants.ts` | `ALERTZERO_TELEMETRY_PREFIX`, the `ALERTZERO_TELEMETRY_EVENTS` name map, and the closed vocabularies |
+| `event_types.ts` | One `EventTypeOpts` and one payload type per event, plus `ALERTZERO_TELEMETRY_EVENT_TYPES` |
+| `register_telemetry_events.ts` | `registerAlertZeroTelemetryEvents(analytics)`, called once in `setup()` |
+| `safe_report_event.ts` | `safeReportEvent` and `createAlertZeroTelemetryReporter`, the never-throw reporters; both return whether the event was reported |
+| `envelope/` | `buildAlertZeroEnvelope` and its resolvers |
+| `worker_settings/` | `buildWorkerSettingsChangedPayloads`, `buildWorkerActivatedPayload`, `bucketScheduleInterval` and `resolveWorkerSetting`, used by `WorkersService` |
+| `snapshot/` | `buildAutonomySnapshotPayload`, `buildFeatureFlagsSnapshotPayload`, `toSnapshotDay` and the `SNAPSHOT_FLAGS` allowlist, used by the snapshot task |
+| `../tasks/telemetry_snapshot/` | The daily `alertzero:telemetry_snapshot` Task Manager task that reads every space and reports the two snapshots |
+| `../../common/telemetry/constants.ts` | The Worker outcome vocabularies (the Attack Discovery Worker's, the shared run outcome, and each Worker's item events) and the Investigation close reasons any Worker reports, which the report step's input schema shares |
+
+## The envelope
+
+Every Worker run event (the `alertzero_ad_worker_*` events, `alertzero_worker_investigation_closed`, `alertzero_worker_run_completed` and each Worker's item events) carries these fields. `buildAlertZeroEnvelope({ executionId, root })` builds them from the run's **root execution**, the persisted `WorkflowExecutionDto` of the Worker that started the chain. It reads nothing from workflow inputs or the step context.
+
+| Field | Type | Required | Source |
+|---|---|---|---|
+| `worker_id` | keyword | yes | The root's `originManagedWorkflowId` if it is in the Worker catalog (`SYSTEM_SECURITY_WORKER_CATALOG`), else `other` |
+| `watch_tag` | keyword | yes | The catalog entry's `watchTag`, else `other` |
+| `autonomy_level` | keyword | no | The root's persisted `workflowDefinition.consts.worker_settings.autonomy` (`manual`, `assisted` or `supervised`). This is never the installed Worker's current settings: a review can park for 72h while the settings change. Absent when the root carries no recognised level, or when the run does not act at that level (see below) |
+| `autonomy_mode` | keyword | no | Derived: `auto_accept` for `supervised` (the review gate auto-approves), `gated` for `manual` and `assisted`. Absent with `autonomy_level` |
+| `run_id` | keyword | yes | The root execution id. Every event of one Worker run shares it |
+| `execution_id` | keyword | yes | The execution that reported the event: the root or a descendant (for example a review) |
+| `is_default_space` | boolean | yes | Whether the root's `spaceId` is the default space |
+| `trigger_type` | keyword | yes | The root's persisted `triggeredBy`: `manual`, `scheduled`, `alert` or `workflow_step` for the built-in sources; `event` for a registered trigger id with the engine's dispatch evidence; `other` for any other provenance string; `unknown` when it is missing. `workflow_step` is the engine's `workflow-step` (its `triggerType` value), spelled with an underscore; the other built-in values and `event` match the engine's |
+
+Launch-gate metrics should select `trigger_type: scheduled` (or `event` for pollers). A manual run of a managed Worker can be steered with inputs.
+
+Some Workers act at their configured autonomy only for some triggers, and for those the envelope has no `autonomy_level` or `autonomy_mode` when the run started another way, rather than a level the run did not act at. `envelope/uses_configured_autonomy.ts` lists them, keyed by catalog Worker id, and a test fails when a Worker's YAML starts or stops reading `execution.triggeredBy` without the list changing. Today it lists one:
+
+| Worker | Acts at its configured autonomy when | Otherwise |
+|---|---|---|
+| Endpoint Analysis | `trigger_type: scheduled` | `set_ki_autonomy` in `forensics_endpoint_analysis.yaml` writes `manual` to each indicator it dispatches, so the analysis waits for approval |
+
+## Worker run events
+
+The `alertzero.reportWorkerOutcome` workflow step emits these events from Worker YAML. Two are shared by every catalogued Worker, and the envelope's `worker_id` says which Worker sent them: `alertzero_worker_run_completed` (how one run ended) and `alertzero_worker_investigation_closed` (a Worker closing its own Investigation). Every other event belongs to one Worker:
+
+| Event | Worker | One per |
+|---|---|---|
+| `alertzero_ad_worker_run_completed`, `_review_started`, `_analysis_completed`, `_handoff_resolved` | Attack Discovery | Run, or reviewed attack |
+| `alertzero_alert_triage_batch_classified` | Alert Triage | Classified alert batch |
+| `alertzero_alert_triage_closure_resolved` | Alert Triage | Settled closure proposal |
+| `alertzero_rule_tuning_review_completed` | Rule Tuning | Reviewed rule |
+| `alertzero_rule_coverage_review_completed` | Rule Coverage | Reviewed detection gap |
+| `alertzero_hunt_report_completed` | Continuous Threat Hunt | Hunted and packaged threat report |
+| `alertzero_endpoint_analysis_completed` | Endpoint Analysis | Analyzed indicator |
+
+The step reports a Worker's own event only from that Worker's run (the run's root execution is that Worker), so one Worker's YAML cannot report another Worker's outcome. Report steps use `on-failure: continue`, so the counts are lower bounds.
+
+The step reports only for a managed AlertZero Worker run. It skips a test run, a workflow AlertZero does not manage, and any chain whose persisted ancestors are not all non-test AlertZero executions in the same space up to a catalog Worker root. Its input is a closed union of enums, bounded counts and flags, and its output is `{ reported }` alone. The caller check is best-effort. See the [step README](../step_types/report_worker_outcome/README.md).
+
+Semantics to keep in mind:
+- Review events can arrive before `run_completed`.
+- A missing `run_completed` means that the runner was cancelled, failed or timed out. Read the root's engine event.
+- Skipped reviews send nothing, so `attacks_persisted` ≥ the number of `review_started` events.
+
+### `alertzero_ad_worker_run_completed`
+
+Emitted by the runner once every review has been dispatched.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `run_outcome` | keyword | yes | `produced`, `empty_no_alerts`, `empty_no_attacks`, `empty_all_duplicates`, `degraded_partial` or `failed_all_batches`. When every batch fails, the run still completes; this marks it |
+| `alerts_analyzed` | long | yes | Alerts sent to generation |
+| `batches_total` | long | yes | Generation batches attempted |
+| `batches_failed` | long | yes | Generation batches that failed |
+| `attacks_generated` | long | yes | Attacks the model generated, before deduplication |
+| `attacks_persisted` | long | yes | Attacks persisted and dispatched for review |
+
+### `alertzero_ad_worker_review_started`
+
+Emitted by a review once its Investigation exists.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `investigation_id` | keyword | no | The Investigation the review opened or reused. It joins Investigation events to the run |
+| `is_rereview` | boolean | no | Whether the attack already had an Investigation |
+
+### `alertzero_ad_worker_analysis_completed`
+
+Emitted by a review after the FP/TP verdict is recorded.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `verdict` | keyword | yes | `true_positive`, `false_positive`, `inconclusive` or `failed`. Timeouts are `failed`, never `inconclusive` |
+| `analysis_error` | boolean | yes | Whether the analysis failed or timed out. Liquid cannot tell a timeout apart from other failures |
+
+### `alertzero_ad_worker_handoff_resolved`
+
+Emitted by a review after a **completed** escalation gate. For a gate that failed or was cancelled, use the proposals events (`caller_run_id`).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `outcome` | keyword | yes | `approved`, `dismissed`, `expired` or `approved_action_failed` |
+| `verdict` | keyword | no | The verdict that led to the escalation (`true_positive` or `inconclusive`) |
+| `auto_approve_requested` | boolean | no | Whether the review asked the gate to auto-approve |
+
+### `alertzero_worker_investigation_closed`
+
+Emitted by a Worker after it closes its own Investigation. Any catalogued Worker can report its closes this way.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above. `worker_id` says which Worker closed the Investigation |
+| `investigation_id` | keyword | yes | The Investigation the Worker closed. For the Attack Discovery Worker it joins to `alertzero_ad_worker_review_started` |
+| `close_reason` | keyword | yes | The Investigation template's close reason the Worker wrote, or the class its close maps to: `false_positive`, `benign`, `resolved`, `duplicate` or `other` |
+
+A Worker reports each close right after it, only when the close left no error and changed `status`. Each close continues on failure, so without the first condition a failed close would still count as closed. Without the second, a Worker that finds its Investigation already closed by a human would count that close again. The reason is the one the close writes. A close that writes no reason is reported as `other`. Each Worker that reports its closes lists them, with their `close_reason`, in its own "How the … Worker reports" section. A Worker's run that never reaches its close (a gate that expires where the Worker leaves the Investigation open, a failed run) sends nothing.
+
+Only a Worker's own closes are measured, and only for a Worker whose YAML calls the step. A close by an Agent Builder agent (`set_conversation_metadata`), a custom workflow or a direct Agent Builder API call sends nothing here. A human close through Agentic Investigations reports its own `agentic_investigations_investigation_closed`.
+
+### `alertzero_worker_run_completed`
+
+Emitted once by a Worker run, at its end, in one vocabulary for every Worker, so a quiet Worker can be told from a broken one without reading each Worker's own events. The epic's investigation and proposal counts come from joins on `run_id` (and the proposals events' `caller_run_id`), not from this event.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above. `worker_id` says which Worker ran |
+| `run_outcome` | keyword | yes | `produced` (did the work it found), `empty_nothing_pending` (no work was queued), `empty_nothing_found` (searched and found nothing), `empty_at_capacity` (work existed but a limit held all of it back), `degraded_partial` (some items produced results, others failed or were held back), `failed_source_unavailable` (the source of work could not be read), `failed_all_items` (every item failed) or `blocked_precondition` (a precondition such as a readable data scope was not met) |
+| `degraded` | boolean | yes | Whether the run did less than the work it found: some items failed, a lookup failed and the run carried on without it, or a limit held work back |
+| `degraded_reason` | keyword | yes | The main reason, `none` when `degraded` is false: `missing_data` (an input or intermediate result was missing), `dependency_unavailable` (a service, model or child workflow failed or could not be read), `partial_timeout` (some items ran out of time), `capacity` (a limit held work back) or `other` |
+| `candidates_found` | long | yes | Work items the run found, in the Worker's own unit |
+| `items_dispatched` | long | yes | Work items the run started or handed on |
+| `items_failed` | long | yes | Work items that failed or could not be started |
+| `items_in_flight` | long | yes | Work items still in progress when the run reported that it did not wait for: reviews or analyses it handed off, or that earlier runs started |
+| `source_read_failed` | boolean | yes | Whether reading the source of work failed. Zero candidates after a failed read does not mean there was no work |
+| `lookup_failed` | boolean | yes | Whether a secondary lookup (for example the list of reviews already in progress) failed and the run carried on without it |
+
+Counts a Worker cannot observe stay `0`. A run that fails or is cancelled before its end sends nothing; read the root's engine event.
+
+Each Worker that reports its runs says what each count means for it, and how it derives `run_outcome`, in its own "How the … Worker reports" section.
+
+### `alertzero_alert_triage_batch_classified`
+
+Emitted by the Alert Triage Worker once a batch of alerts is classified, before the closure review starts.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `alerts_total` | long | yes | Alerts in the batch |
+| `verdicts_true_positive` | long | yes | Alerts classified as true positives |
+| `verdicts_false_positive` | long | yes | Alerts classified as false positives |
+| `verdicts_inconclusive` | long | yes | Alerts classified as inconclusive |
+| `alerts_without_verdict` | long | yes | Alerts the analysis returned no verdict for. They are not tagged, noted or proposed |
+| `fp_candidates` | long | yes | False positives at or above the confidence floor, which the closure proposal covers |
+| `fp_below_floor` | long | yes | False positives below the floor, which are tagged and noted but not proposed |
+| `investigation_id` | keyword | no | The Investigation the Worker opened for the batch. It joins to the batch's close |
+
+### `alertzero_alert_triage_closure_resolved`
+
+Emitted by the Alert Triage closure review once its proposal has settled and the outcome has been applied.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `outcome` | keyword | yes | `approved`, `dismissed`, `expired` or `unknown` (any other gate state, which leaves the Investigation open) |
+| `alerts_proposed` | long | yes | Alerts the closure proposal covered |
+| `alerts_retag_failed` | long | yes | Alerts a dismissal could not re-tag from `az:false_positive`, `0` on any other outcome |
+| `auto_approve_requested` | boolean | yes | Whether the review asked the gate to auto-approve (supervised autonomy) |
+| `proposal_read_failed` | boolean | yes | Whether the decided proposal could not be read back. A dismissal then leaves the tags and the Investigation untouched |
+| `investigation_id` | keyword | no | The batch's Investigation. It joins to `alertzero_alert_triage_batch_classified` and to the close |
+
+### `alertzero_rule_tuning_review_completed`
+
+Emitted by a Rule Tuning review for one rule, when it ends: after the manual entry gate is declined, or after the tuning proposal is decided.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `entry_gate` | keyword | yes | `skipped` (no entry gate ran: assisted autonomy, or a rule that could not be read), `approved`, `declined` or `undecided` (nobody answered it) |
+| `change_type` | keyword | yes | The tuning change proposed: `query`, `risk_score`, `exception`, `threshold`, `schedule`, `manual` (the action-less arm, which also takes any type the other arms do not name) or `none` |
+| `confidence` | keyword | yes | The diagnosis's stated confidence: `low`, `medium`, `high` or `none` |
+| `decision` | keyword | yes | `approved`, `dismissed`, `undecided` (a proposal nobody decided) or `none` (no proposal) |
+| `applied` | boolean | yes | Whether an approved change was applied to the rule |
+| `backtest_ran` | boolean | yes | Whether both backtest previews (current and proposed rule) succeeded |
+| `backtest_reduced_alerts` | boolean | yes | Whether the proposed rule produced fewer preview alerts. False when the backtest did not run |
+| `rule_unavailable` | boolean | yes | Whether the rule could not be read or was disabled, so the review did nothing |
+| `investigation_id` | keyword | no | The Investigation the review opened. It joins to the close |
+
+### `alertzero_rule_coverage_review_completed`
+
+Emitted by a Rule Coverage review for one detection gap (a knowledge indicator), when it ends.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `verdict` | keyword | yes | The coverage check's verdict: `covered_enabled`, `covered_disabled`, `prebuilt_available`, `no_coverage` or `none` |
+| `proposal_kind` | keyword | yes | What the review proposed: `enable_rule`, `install_prebuilt_rule`, `create_rule`, `confirm_coverage`, `manual_follow_up` (an action-less report when the check's result could not be acted on) or `none` |
+| `decision` | keyword | yes | `approved`, `dismissed`, `undecided` (a proposal nobody decided) or `none` (no proposal) |
+| `applied` | boolean | yes | Whether an approved enable or install landed, confirmed by re-reading the rule |
+| `approved_not_applied` | boolean | yes | Whether an approved enable or install did not land. The indicator then stays pending |
+| `rule_created` | boolean | yes | Whether a new rule was created for the gap |
+| `creation_skipped` | boolean | yes | Whether the rule-creation run completed without proposing a rule |
+| `creation_failed` | boolean | yes | Whether the rule-creation run failed |
+| `check_failed` | boolean | yes | Whether the indicator was not found or the check returned no verdict |
+| `ki_processed` | boolean | yes | Whether the indicator was marked processed |
+| `investigation_id` | keyword | no | The Investigation the review opened. It joins to the close |
+
+The review's free-text outputs (`check_error`, `creation_error`, `creation_skip_reason`, rule names) are reported only as the booleans above.
+
+### `alertzero_hunt_report_completed`
+
+Emitted by Hunt packaging for one threat report, once packaging has run.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `hunt_status` | keyword | yes | The hunt child's result status: `success`, `partial`, `failed` or `unknown` |
+| `has_confirmed_hit` | boolean | yes | Whether the hunt cleared the confirmed-hit bar |
+| `tier2_invoked` | boolean | no | Whether the hunt ran Tier 2 (behavioral queries). Absent when the Worker did not pass it |
+| `package_status` | keyword | yes | Packaging's own status: `success` or `run_incomplete` |
+| `closed_clean` | boolean | yes | Whether a clean run closed the Investigation as benign |
+| `proposals_prepared` | long | yes | Proposals packaging prepared and launched a gate for |
+| `proposals_dispatch_failed` | long | yes | Proposal gates that failed to launch |
+| `mint_suppression` | keyword | yes | Why packaging held back its Proposals: `none`, `existing_proposals` or `check_failed` |
+| `coverage_kis_written` | long | yes | Coverage knowledge items written for Detection Watch |
+| `coverage_kis_skipped` | long | yes | Coverage knowledge items not written |
+| `investigation_id` | keyword | no | The report's Investigation. It joins to the close and the reopen |
+
+The epic's sweep counts (reports swept, Tier 2 invoked, findings reviewable or clean, coverage written) are sums of these events by `run_id`.
+
+### `alertzero_endpoint_analysis_completed`
+
+Emitted by one Endpoint Analysis run for one indicator, when it ends. The run works on the Attack Discovery Investigation named by the indicator and never opens or closes its own.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| envelope | | | See above |
+| `analysis_outcome` | keyword | yes | How the run settled the indicator: `processed`, `no_host` (the discovery named no host), `failed` (no findings landed), `proposals_lost` (findings landed but a containment proposal did not reach the queue), `unreachable` (the Investigation could not be read), `invalid` (a malformed indicator) or `not_pending` (the indicator was no longer pending) |
+| `reused_prior_assessment` | boolean | yes | Whether an earlier run's findings were already attached, so the agent did not run again |
+| `host_resolved` | boolean | yes | Whether a host was found to analyze |
+| `agent_failed` | boolean | yes | Whether the forensic agent failed |
+| `timeline_found` | boolean | yes | Whether the analysis reconstructed any timeline event |
+| `iocs_found` | boolean | yes | Whether the analysis extracted any indicator of compromise |
+| `findings_attached` | boolean | yes | Whether both findings are on the Investigation |
+| `actions_recommended` | long | yes | Containment actions the analysis recommended |
+| `proposals_dispatched` | long | yes | Containment proposals dispatched to the queue |
+| `proposals_dispatch_failed` | long | yes | Containment proposals that did not reach the queue |
+| `auto_approve_requested` | boolean | yes | Whether the proposals ask the gate to auto-approve (supervised autonomy) |
+
+## Worker settings events
+
+`WorkersService.update` emits these events after its write is confirmed. They carry no run envelope. Instead they carry `worker_id`, `watch_tag` and `is_default_space`, with the same rules as the envelope. The helpers that build them live in `worker_settings/`.
+
+A PATCH that is rejected, conflicts on its revision, is invalid, or whose write cannot be confirmed sends nothing. The events are reported only once every write of the PATCH has succeeded, so a PATCH that fails part way (for example, its disable write fails after its settings were saved) sends nothing either.
+
+### `alertzero_worker_settings_changed`
+
+One event per changed setting. The service diffs the stored settings against the confirmed write (`diffWorkerSettings`), so a PATCH that repeats the stored values sends nothing. Defaults that a legacy document gains on save are not a change.
+
+An enable or disable of an installed Worker is reported as the `enabled` setting. The service compares the requested state with the enabled state it read before the write, so enabling an enabled Worker or disabling a disabled one sends nothing. The write that first installs a Worker sends `alertzero_worker_activated` instead, and no `enabled` event, so the install is not counted twice. A settings save on that install is still compared with the Worker's defaults, so a non-default autonomy, schedule or extras value in it sends `alertzero_worker_settings_changed`. Binding a Worker's first service account is not a change: the browser creates the account (`public/service_accounts/ensure_worker_service_accounts.ts`) and sends it with the Worker's first enable, whether that enable installs the Worker or turns on one a settings save installed disabled. So when the previous settings had no account, the account is not compared. Replacing one account with another, or clearing it, is `setting: service_account`, without either account.
+
+Enables and disables that don't go through `WorkersService.update` send nothing: an enabled-only update through the Workflows pages or API (`PUT /api/workflows/workflow/{id}` accepts one on a managed workflow), a per-space "disable all workflows", and the Workflows plugin turning workflows off on license or configuration loss. `alertzero_autonomy_snapshot` catches the state up the next day.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `worker_id` | keyword | yes | Catalog id, else `other` |
+| `watch_tag` | keyword | yes | Catalog watch tag, else `other` |
+| `is_default_space` | boolean | yes | Whether the Worker is in the default space |
+| `setting` | keyword | yes | `autonomy`, `schedule_interval`, `extras`, `service_account` (the Worker's service account changed; never which account), `enabled` (an enable or disable of an installed Worker) or `other` (any settings key outside this allowlist) |
+| `previous_value` | keyword | no | The previous value, for enum, bounded or boolean settings only: the autonomy level, the schedule interval bucket, or `true` or `false` for `enabled`. On a Worker's first save it is the Worker's default. Absent for `extras` and `other` |
+| `next_value` | keyword | no | The new value, with the same rules as `previous_value` |
+| `settings_revision` | long | no | The settings revision the write was accepted against (the Worker document's version before the write). Absent on a Worker's first save, and on an enable or disable that saves no settings |
+| `bulk_write` | boolean | yes | Whether the same write changed more than one setting, counting an enable or disable as one. Each changed setting still gets its own event |
+
+`extras` and `other` values are never sent. The event only records that they changed.
+
+`enabled` values are the strings `true` and `false`, because `previous_value` and `next_value` are keywords. A PATCH that changes the autonomy level and disables the Worker sends two events, `autonomy` then `enabled`, both with `bulk_write: true` and the same `settings_revision`.
+
+A schedule interval is never sent raw. It is reported as one of these half-open buckets: `lt_15m`, `15m_to_lt_1h`, `1h_to_lt_6h`, `6h_to_lt_24h`, `24h_to_lt_7d` or `gte_7d`, and `unknown` for an interval that does not parse. A change inside one bucket (for example `2h` to `3h`) is still reported, with equal previous and next values.
+
+### `alertzero_worker_activated`
+
+Emitted once per Worker and space, by the write that first installs the Worker there. That is a first enable, or a settings save or disable on a Worker with no document yet, which installs it disabled. So "activated" means installed, not turned on: the onboarding page's per-Worker toggles install every Worker they list, including the ones left off, and each of those sends `enabled: false`. A later enable or disable of an installed Worker sends `alertzero_worker_settings_changed` with `setting: enabled` instead. Current enabled state across the cluster comes from `alertzero_autonomy_snapshot`.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `worker_id` | keyword | yes | Catalog id, else `other` |
+| `watch_tag` | keyword | yes | Catalog watch tag, else `other` |
+| `is_default_space` | boolean | yes | Whether the Worker is in the default space |
+| `enabled` | boolean | yes | Whether the Worker is enabled after the write that installed it |
+| `autonomy_level` | keyword | no | The autonomy level the Worker was installed with. Absent when its stored settings cannot be read |
+
+## Daily snapshots
+
+A daily Task Manager task (`alertzero:telemetry_snapshot`, `../tasks/telemetry_snapshot/`) sends one event of each type per day, as a cluster-level aggregate summed across spaces. No event carries a space id, and there is no per-space event.
+
+- **Registration.** The task type is registered in `setup()` inside the `xpack.alertzero.enabled` guard. `start()` schedules it, with a stable id and a `3h` interval, only when Agent Builder, Proposals and Agentic Investigations are present, and then before it checks service accounts. Task Manager is a required plugin (the task type is registered with its setup contract). Telemetry is optional: without it every run counts as opted out and sends nothing.
+- **Service accounts off.** AlertZero installs and manages Workers only with Kibana service accounts on (`xpack.security.serviceAccounts.enabled`, off by default). With them off, `start()` schedules the task and then returns early: it installs no Workers and starts no managed workflows client, so the outcome step reports nothing, even from a Worker installed earlier that keeps running. The task still reports both snapshots, each with `service_accounts_enabled: false`, from the same check. `alertzero_autonomy_snapshot` then has no `workers` field, because the task reads no Worker documents. So a cluster that turned AlertZero on but not service accounts shows up as such.
+- **Kill switch.** With `xpack.alertzero.enabled: false` the plugin does not load, so it cannot remove the task; a task document scheduled earlier is never claimed, because its type is not registered.
+- **Opt-in first.** Each run reads the telemetry plugin's opt-in decision before any Elasticsearch work, and sends nothing when opted out. No telemetry plugin, or no decision yet, counts as opted out.
+- **Once per UTC day.** The task runs every 3 hours, and its state keeps `lastSnapshotDay`, so only the first successful run of a UTC day sends. A run is successful only when both summaries were reported. A failed or aborted run is retried within hours rather than a day later. A newly scheduled task runs right away, and after a restart the next run still sends if the day has not been reported. Consumers can also dedupe on `snapshot_day`.
+- **Reads.** The task lists every space from the `space` saved objects (only `default` without the spaces plugin), then reads at most 5 spaces at a time. For each space it reads the two Advanced Settings through an internal saved objects client scoped to that space, and, with service accounts on, each catalog Worker's installed document through AlertZero's owner-bound managed workflows client, as the Workers API does. None of these reads takes an abort signal, so the run checks it before each space and before reporting.
+- **Read-only settings.** Reading Advanced Settings normally creates the space's `config` object for this Kibana version when it is missing (upgrading an older one). The task reads them through a saved objects client that refuses every write (`create_read_only_saved_objects_client.ts`), which the settings client treats as a read-only user: it returns the values an upgrade would carry over, or the defaults, with `uiSettings.overrides` still applied, and writes nothing. So the daily task never creates or upgrades a space's settings.
+- **Failures.** A space whose reads fail is left out of both events, and `space_count` counts only the spaces read. A run that fails, is aborted, or can read no space sends nothing and does not record the day. A run whose report of either summary fails (the reporter returns `false`) does not record the day either, so the next run sends both again, and the one that did go out arrives twice that day (dedupe on `snapshot_day`). Each is logged, and the next scheduled run tries again, so a failure skips a day at most.
+
+### `alertzero_autonomy_snapshot`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `service_accounts_enabled` | boolean | yes | Whether Kibana service accounts are on (`xpack.security.serviceAccounts.enabled`). AlertZero installs and manages Workers only when they are. When `false`, the task reads no Workers and `workers` is absent |
+| `snapshot_day` | keyword | yes | The UTC day (`YYYY-MM-DD`) the snapshot describes. Used to dedupe catch-up runs |
+| `space_count` | long | yes | Number of spaces aggregated |
+| `workers` | array | no | One entry per `worker_id` × `autonomy_level` × `enabled` combination. Absent when `service_accounts_enabled` is `false`, because no Worker document was read; empty when Workers were read and none is installed |
+| `workers.worker_id` | keyword | yes | Catalog id, else `other` |
+| `workers.autonomy_level` | keyword | yes | `manual`, `assisted` or `supervised` |
+| `workers.enabled` | boolean | yes | Whether the installed Worker is enabled |
+| `workers.count` | long | yes | Number of spaces with that combination |
+
+Only Workers installed in a space are counted: a Worker that was never enabled or saved there has no document. A Worker whose stored settings cannot be parsed is not counted either. With service accounts off the event has no `workers` field, even for Workers installed while they were on, because the task reads no Worker documents then.
+
+### `alertzero_feature_flags_snapshot`
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `snapshot_day` | keyword | yes | The UTC day (`YYYY-MM-DD`) the snapshot describes |
+| `space_count` | long | yes | Number of spaces aggregated |
+| `service_accounts_enabled` | boolean | yes | Whether Kibana service accounts are on, from the same check as `alertzero_autonomy_snapshot` |
+| `flags` | array | yes | One entry per allowlisted flag |
+| `flags.flag` | keyword | yes | An allowlisted flag or advanced setting id: `securitySolution:enableAlertZero`, `securitySolution:enableAttackDiscoveryWorkflows` or `securitySolution.attackDiscoveryWorkflowsEnabled` (see the allowlist below) |
+| `flags.enabled_space_count` | long | yes | Number of spaces where it is enabled |
+
+The allowlist, in payload order:
+
+| `flag` | Kind | Enabled when |
+|---|---|---|
+| `securitySolution:enableAlertZero` | Per-space Advanced Setting | The space's value is `true` |
+| `securitySolution:enableAttackDiscoveryWorkflows` | Per-space Advanced Setting (Security Solution) | The space's value is `true`. An unset value, or Security Solution not registering the setting, counts as disabled |
+| `securitySolution.attackDiscoveryWorkflowsEnabled` | Deployment-wide feature flag | The flag is on (it defaults to on). It has no per-space value, so its count is `space_count` or `0` |
+
+Attack Discovery Workflows are active in a space only when both of the last two are enabled there.
