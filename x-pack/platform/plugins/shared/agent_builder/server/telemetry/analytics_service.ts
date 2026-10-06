@@ -21,6 +21,7 @@ import {
 import type {
   ReportAgentCreatedParams,
   ReportAgentUpdatedParams,
+  ReportConversationFieldsChangedParams,
   ReportPluginImportedParams,
   ReportExecutionCompleteParams,
   ReportRoundCompleteParams,
@@ -133,6 +134,22 @@ export class AnalyticsService {
     } catch (error) {
       // Do not fail the request if telemetry fails
       this.logger.debug('Failed to report AgentUpdated telemetry event', { error });
+    }
+  }
+
+  /**
+   * Reports the template fields, opted in with `report_changes`, that one write changed, after the
+   * write has landed. Never throws.
+   */
+  reportConversationFieldsChanged(params: ReportConversationFieldsChangedParams): void {
+    try {
+      this.analytics.reportEvent<ReportConversationFieldsChangedParams>(
+        AGENT_BUILDER_EVENT_TYPES.ConversationFieldsChanged,
+        params
+      );
+    } catch (error) {
+      // Do not fail the write if telemetry fails
+      this.logger.debug('Failed to report ConversationFieldsChanged telemetry event', { error });
     }
   }
 
