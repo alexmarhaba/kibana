@@ -17,6 +17,7 @@ import {
   hasValidCreateMetadataOperations,
 } from '@kbn/dashboard-agent-authoring';
 import { generateDashboardTool } from './generate_dashboard_tool';
+import { applyDefaultDashboardTimeRange } from './time_range';
 
 jest.mock('./attachment_state', () => ({ retrieveLatestVersion: jest.fn() }));
 jest.mock('@kbn/dashboard-agent-authoring', () => ({
@@ -77,21 +78,39 @@ const callHandler = async (dashboardAttachmentId?: string) => {
 };
 
 describe('generateDashboardTool handler', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockHasValidCreateMetadataOperations.mockReturnValue(true);
+  const mockFinalizedDashboard = ({ allChangesDiscarded }: { allChangesDiscarded: boolean }) =>
     mockExecuteDashboardOperations.mockImplementation(async ({ finalizeDashboard }) => ({
       dashboardData: finalizeDashboard
         ? await finalizeDashboard(generatedDashboard, {
             originalDashboardData: generatedDashboard,
             editedPanelIds: new Set(),
             panelAuthoringNotes: [],
+            allChangesDiscarded,
             reportFailure: jest.fn(),
           })
         : generatedDashboard,
       failures: [],
       panelAuthoringNotes: [],
     }));
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockHasValidCreateMetadataOperations.mockReturnValue(true);
+    mockFinalizedDashboard({ allChangesDiscarded: false });
+  });
+
+  it('does not apply a default time range when all changes were discarded', async () => {
+    mockRetrieveLatestVersion.mockReturnValue({
+      version: 3,
+      data: generatedDashboard,
+    } as ReturnType<typeof retrieveLatestVersion>);
+    mockFinalizedDashboard({ allChangesDiscarded: true });
+
+    const { attachments, sendUiEvent } = await callHandler('dashboard-attachment-id');
+
+    expect(applyDefaultDashboardTimeRange).not.toHaveBeenCalled();
+    expect(attachments.update).not.toHaveBeenCalled();
+    expect(sendUiEvent).not.toHaveBeenCalled();
   });
 
   it.each([

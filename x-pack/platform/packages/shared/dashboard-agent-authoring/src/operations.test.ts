@@ -523,15 +523,17 @@ describe('executeDashboardOperations', () => {
       ]);
     });
 
-    it('skips finalizeDashboard when validation discarded all changes', async () => {
-      const originalDashboardData: DashboardAttachmentData = { title: 'Dashboard', panels: [] };
-      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
+    const finalizeWithTimeRange = () =>
+      jest.fn(async (dashboardData: DashboardAttachmentData) => ({
         ...dashboardData,
         time_range: { from: 'now-15m', to: 'now' },
       }));
 
-      const result = await executeDashboardOperations({
-        dashboardData: originalDashboardData,
+    it('tells finalizeDashboard when validation discarded the whole change', async () => {
+      const finalizeDashboard = finalizeWithTimeRange();
+
+      await executeDashboardOperations({
+        dashboardData: { title: 'Dashboard', panels: [] },
         operations: [{ operation: 'set_metadata', title: 'Renamed' }],
         logger,
         finalizeDashboard,
@@ -539,70 +541,82 @@ describe('executeDashboardOperations', () => {
           title === 'Renamed' ? [{ path: [], message: 'Invalid dashboard' }] : [],
       });
 
-      expect(finalizeDashboard).not.toHaveBeenCalled();
-      expect(result.dashboardData).toEqual(originalDashboardData);
-      expect(result.failures).toEqual([
-        expect.objectContaining({
-          type: DASHBOARD_OPERATION_FAILURE_TYPES.validateDashboard,
-          error: expect.stringContaining('All changes were discarded'),
-        }),
-      ]);
+      expect(finalizeDashboard).toHaveBeenCalledWith(
+        { title: 'Dashboard', panels: [] },
+        expect.objectContaining({ allChangesDiscarded: true })
+      );
     });
 
-    it('skips finalizeDashboard when validation discarded each change separately', async () => {
-      const originalDashboardData: DashboardAttachmentData = {
-        title: 'Dashboard',
-        panels: [createLensPanel('existing')],
-      };
-      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
-        ...dashboardData,
-        time_range: { from: 'now-15m', to: 'now' },
-      }));
-
-      const result = await executeDashboardOperations({
-        dashboardData: originalDashboardData,
-        operations: [
-          {
-            operation: 'add_panels',
-            panels: [
-              { source: 'request', chartType: SupportedChartType.Metric, query: 'show latency' },
-            ],
-          },
-        ],
-        logger,
-        resolvePanelContent: createResolvePanelContent({
-          'show latency': createResolvedPanelContent(
-            { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric', unrecognizedKey: true } },
-            'Created a metric showing latency.'
-          ),
-        }),
-        finalizeDashboard,
-        validateDashboard,
-      });
-
-      expect(finalizeDashboard).not.toHaveBeenCalled();
-      expect(result.dashboardData).toEqual(originalDashboardData);
-      expect(result.failures).toEqual([
-        expect.objectContaining({ type: DASHBOARD_OPERATION_FAILURE_TYPES.validateDashboard }),
-      ]);
+    const addPanelsOperation = (queries: string[]): DashboardOperation => ({
+      operation: 'add_panels',
+      panels: queries.map((query) => ({
+        source: 'request',
+        chartType: SupportedChartType.Metric,
+        query,
+      })),
+    });
+    const resolveValidAndInvalidPanels = createResolvePanelContent({
+      'show requests': createResolvedPanelContent(
+        { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric' } },
+        'Created a metric showing requests.'
+      ),
+      'show latency': createResolvedPanelContent(
+        { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric', unrecognizedKey: true } },
+        'Created a metric showing latency.'
+      ),
     });
 
-    it('finalizes a call without discarded changes even when nothing else changed', async () => {
-      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
-        ...dashboardData,
-        time_range: { from: 'now-15m', to: 'now' },
+    it.each([
+      ['every change was discarded separately', ['show latency'], true],
+      ['some changes were kept', ['show requests', 'show latency'], false],
+      ['nothing was discarded', [], false],
+    ])(
+      'tells finalizeDashboard whether all changes were discarded when %s',
+      async (_, queries, allChangesDiscarded) => {
+        const finalizeDashboard = finalizeWithTimeRange();
+
+        await executeDashboardOperations({
+          dashboardData: { title: 'Dashboard', panels: [createLensPanel('existing')] },
+          operations: queries.length > 0 ? [addPanelsOperation(queries)] : [],
+          logger,
+          resolvePanelContent: resolveValidAndInvalidPanels,
+          finalizeDashboard,
+          validateDashboard,
+        });
+
+        expect(finalizeDashboard).toHaveBeenCalledWith(
+          expect.anything(),
+          expect.objectContaining({ allChangesDiscarded })
+        );
+      }
+    );
+
+    it('applies a layout request when validation discarded every other change', async () => {
+      const arrangeLayout = jest.fn(async () => ({
+        panels: [{ id: 'existing', x: 0, y: 0, w: 48, h: 9 }],
+        sections: [],
       }));
 
       const result = await executeDashboardOperations({
         dashboardData: { title: 'Dashboard', panels: [createLensPanel('existing')] },
-        operations: [],
+        operations: [addPanelsOperation(['show latency'])],
         logger,
-        finalizeDashboard,
+        resolvePanelContent: resolveValidAndInvalidPanels,
+        finalizeDashboard: (dashboardData, changes) =>
+          arrangeDashboardLayout({
+            ...changes,
+            dashboardData,
+            instructions: 'make the existing panel full width',
+            logger,
+            arrangeLayout,
+          }),
         validateDashboard,
       });
 
-      expect(finalizeDashboard).toHaveBeenCalled();
-      expect(result.dashboardData.time_range).toEqual({ from: 'now-15m', to: 'now' });
+      expect(arrangeLayout).toHaveBeenCalled();
+      expect(getPanelsOnly(result.dashboardData.panels)).toEqual([
+        expect.objectContaining({ id: 'existing', grid: { x: 0, y: 0, w: 48, h: 9 } }),
+      ]);
     });
 
     it('returns the failures finalizeDashboard reports', async () => {
