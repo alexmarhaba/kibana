@@ -304,12 +304,14 @@ export const discardInvalidChanges = ({
   );
   if (invalidPinnedPanels.length > 0) {
     const invalidPinnedPanelKeys = new Set(invalidPinnedPanels.map(({ unit }) => unit.key));
-    nextDashboardData = {
-      ...nextDashboardData,
-      pinned_panels: dashboardData.pinned_panels?.filter(
-        (pinnedPanel) => !invalidPinnedPanelKeys.has(getPinnedPanelKey(pinnedPanel))
-      ),
-    };
+    const keptPinnedPanels = dashboardData.pinned_panels?.filter(
+      (pinnedPanel) => !invalidPinnedPanelKeys.has(getPinnedPanelKey(pinnedPanel))
+    );
+    // A dashboard that had no controls keeps having none, rather than an empty list.
+    nextDashboardData =
+      keptPinnedPanels?.length === 0 && !('pinned_panels' in originalDashboardData)
+        ? restoreField(nextDashboardData, originalDashboardData, 'pinned_panels')
+        : { ...nextDashboardData, pinned_panels: keptPinnedPanels };
     failures.push(
       toFailure(
         'pinned_panels',
