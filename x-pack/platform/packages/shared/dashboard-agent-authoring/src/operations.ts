@@ -41,7 +41,10 @@ export interface FinalizeDashboardContext {
   panelAuthoringNotes: readonly PanelAuthoringNote[];
 }
 
-/** Completes the dashboard after all operations ran and before it is validated. */
+/**
+ * Completes the dashboard after all operations ran and their invalid changes were discarded. What
+ * it changes is validated again.
+ */
 export type FinalizeDashboard = (
   dashboardData: DashboardAttachmentData,
   context: FinalizeDashboardContext
@@ -54,10 +57,11 @@ export type FinalizeDashboard = (
  * is resolved via the injected `resolvePanelContent` callback, so the core never
  * reads any store. Control fields are validated against index mappings when
  * the host provides `resolveControlFieldCapabilities`. New panels and sections
- * are placed below the existing ones, two panels per row. The host can complete
- * the result with `finalizeDashboard` (e.g. a default time range, or arranging
- * the layout) before it is validated. When the host provides `validateDashboard`, changes
- * that make the dashboard invalid are discarded and reported as failures.
+ * are placed below the existing ones, two panels per row. When the host provides
+ * `validateDashboard`, changes that make the dashboard invalid are discarded and
+ * reported as failures. The host can then complete the result with
+ * `finalizeDashboard` (e.g. a default time range, or arranging the layout),
+ * whose changes are validated again.
  */
 export const executeDashboardOperations = async ({
   dashboardData,
@@ -103,29 +107,41 @@ export const executeDashboardOperations = async ({
     });
   }
 
-  if (finalizeDashboard) {
-    nextDashboardData = await finalizeDashboard(nextDashboardData, {
+  const discardedPanelIds = new Set<string>();
+  const validate = (dashboardDataToValidate: DashboardAttachmentData) => {
+    if (!validateDashboard) {
+      return dashboardDataToValidate;
+    }
+    const validationResult = discardInvalidChanges({
       originalDashboardData,
-      editedPanelIds: context.editedPanelIds,
-      panelAuthoringNotes,
+      dashboardData: dashboardDataToValidate,
+      validateDashboard,
     });
-  }
+    failures.push(...validationResult.failures);
+    validationResult.discardedPanelIds.forEach((panelId) => discardedPanelIds.add(panelId));
+    return validationResult.dashboardData;
+  };
+  const getKeptAuthoringNotes = () =>
+    panelAuthoringNotes.filter(({ panelId }) => !discardedPanelIds.has(panelId));
 
-  if (!validateDashboard) {
-    return { dashboardData: nextDashboardData, failures, panelAuthoringNotes };
-  }
+  // Discard invalid changes before finalizing, so the layout is arranged for the panels that are kept.
+  nextDashboardData = validate(nextDashboardData);
 
-  const validationResult = discardInvalidChanges({
-    originalDashboardData,
-    dashboardData: nextDashboardData,
-    validateDashboard,
-  });
+  if (finalizeDashboard) {
+    nextDashboardData = validate(
+      await finalizeDashboard(nextDashboardData, {
+        originalDashboardData,
+        editedPanelIds: new Set(
+          [...context.editedPanelIds].filter((panelId) => !discardedPanelIds.has(panelId))
+        ),
+        panelAuthoringNotes: getKeptAuthoringNotes(),
+      })
+    );
+  }
 
   return {
-    dashboardData: validationResult.dashboardData,
-    failures: [...failures, ...validationResult.failures],
-    panelAuthoringNotes: panelAuthoringNotes.filter(
-      ({ panelId }) => !validationResult.discardedPanelIds.has(panelId)
-    ),
+    dashboardData: nextDashboardData,
+    failures,
+    panelAuthoringNotes: getKeptAuthoringNotes(),
   };
 };
