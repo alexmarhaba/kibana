@@ -18,10 +18,14 @@ export const removeControlsOperation = defineOperation({
       .describe('IDs of controls to remove (from the controls[] list in the tool result).'),
   }),
   handler: ({ dashboardData, operation }) => {
+    if (!dashboardData.pinned_panels) {
+      return dashboardData;
+    }
+
     const idsToRemove = new Set(operation.control_ids);
     return {
       ...dashboardData,
-      pinned_panels: (dashboardData.pinned_panels ?? []).filter(
+      pinned_panels: dashboardData.pinned_panels.filter(
         (control) => !idsToRemove.has((control as { id?: string }).id ?? '')
       ),
     };
