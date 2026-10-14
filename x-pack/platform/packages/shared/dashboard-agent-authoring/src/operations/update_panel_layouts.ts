@@ -5,8 +5,14 @@
  * 2.0.
  */
 
+import { isSection } from '@kbn/agent-builder-dashboards-common';
 import { z } from '@kbn/zod/v4';
-import { appendPanelsToDashboard, removePanelsFromDashboard } from '../dashboard_state';
+import {
+  appendPanelsToDashboard,
+  getContainerWidgets,
+  getWidgetsBottomY,
+  removePanelsFromDashboard,
+} from '../dashboard_state';
 import { DASHBOARD_OPERATION_FAILURE_TYPES } from '../failure_types';
 import { defineOperation } from './types';
 
@@ -47,11 +53,27 @@ export const updatePanelLayoutsOperation = defineOperation({
         continue;
       }
 
+      // sectionId targets a section; null promotes the panel to the top level
+      const targetSectionId = sectionId ?? undefined;
+      const sourceSectionId = nextDashboardData.panels.find(
+        (widget) => isSection(widget) && widget.panels.some(({ id }) => id === panelId)
+      )?.id;
+      if (sourceSectionId === targetSectionId) {
+        continue;
+      }
+
+      // Keep the size, but place the panel below the content of its new container, since its
+      // coordinates belong to the container it left.
+      const targetBottomY = getWidgetsBottomY(
+        getContainerWidgets(dashboardAfterRemoval, targetSectionId)
+      );
       nextDashboardData = appendPanelsToDashboard({
         dashboardData: dashboardAfterRemoval,
-        panelsToAdd: removedPanels,
-        // sectionId targets a section; null promotes the panel to the top level
-        sectionId: sectionId ?? undefined,
+        panelsToAdd: removedPanels.map((panel) => ({
+          ...panel,
+          grid: { ...panel.grid, x: 0, y: targetBottomY },
+        })),
+        sectionId: targetSectionId,
       });
     }
 
