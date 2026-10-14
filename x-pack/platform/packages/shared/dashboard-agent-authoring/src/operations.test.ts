@@ -417,6 +417,27 @@ describe('executeDashboardOperations', () => {
     });
   });
 
+  it('places each empty section and the panels after it on their own row', async () => {
+    const result = await executeDashboardOperations({
+      dashboardData: { title: 'Test dashboard', panels: [] },
+      operations: [
+        { operation: 'add_section', title: 'First' },
+        { operation: 'add_section', title: 'Second' },
+        {
+          operation: 'add_panels',
+          panels: [{ source: 'attachment', attachment_id: 'metric-vis' }],
+        },
+      ],
+      logger,
+      resolveAttachmentPanel: resolveMetricAttachment,
+    });
+
+    expect(getSections(result.dashboardData.panels).map(({ grid }) => grid.y)).toEqual([0, 1]);
+    expect(getPanelsOnly(result.dashboardData.panels)[0].grid).toEqual(
+      expect.objectContaining({ x: 0, y: 2 })
+    );
+  });
+
   describe('validateDashboard', () => {
     const validateDashboard: ValidateDashboard = ({ panels }) =>
       panels.flatMap((widget, widgetIndex) =>
@@ -499,6 +520,59 @@ describe('executeDashboardOperations', () => {
           type: DASHBOARD_OPERATION_FAILURE_TYPES.validateDashboard,
           identifier: 'time_range',
         }),
+      ]);
+    });
+
+    it('skips finalizeDashboard when validation discarded all changes', async () => {
+      const originalDashboardData: DashboardAttachmentData = { title: 'Dashboard', panels: [] };
+      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
+        ...dashboardData,
+        time_range: { from: 'now-15m', to: 'now' },
+      }));
+
+      const result = await executeDashboardOperations({
+        dashboardData: originalDashboardData,
+        operations: [{ operation: 'set_metadata', title: 'Renamed' }],
+        logger,
+        finalizeDashboard,
+        validateDashboard: ({ title }) =>
+          title === 'Renamed' ? [{ path: [], message: 'Invalid dashboard' }] : [],
+      });
+
+      expect(finalizeDashboard).not.toHaveBeenCalled();
+      expect(result.dashboardData).toEqual(originalDashboardData);
+      expect(result.failures).toEqual([
+        expect.objectContaining({
+          type: DASHBOARD_OPERATION_FAILURE_TYPES.validateDashboard,
+          error: expect.stringContaining('All changes were discarded'),
+        }),
+      ]);
+    });
+
+    it('returns the failures finalizeDashboard reports', async () => {
+      const result = await executeDashboardOperations({
+        dashboardData: { title: 'Dashboard', panels: [createLensPanel('panel-1')] },
+        operations: [],
+        logger,
+        finalizeDashboard: (dashboardData, changes) =>
+          arrangeDashboardLayout({
+            ...changes,
+            dashboardData,
+            instructions: 'make panel-1 full width',
+            logger,
+            arrangeLayout: async () => {
+              throw new Error('Model unavailable');
+            },
+          }),
+      });
+
+      expect(result.dashboardData.panels).toEqual([createLensPanel('panel-1')]);
+      expect(result.failures).toEqual([
+        {
+          type: DASHBOARD_OPERATION_FAILURE_TYPES.layout,
+          identifier: 'layout',
+          error: expect.stringContaining('Model unavailable'),
+        },
       ]);
     });
   });
@@ -1352,6 +1426,57 @@ describe('executeDashboardOperations', () => {
           config: { type: 'metric' },
         }),
       ]);
+    });
+
+    it('places a moved panel below the content of its new container, keeping its size', async () => {
+      const result = await executeDashboardOperations({
+        dashboardData: {
+          title: 'Test dashboard',
+          panels: [
+            createLensPanel('top-1', 0),
+            createSection('section-a', 'Section A', 9, [createLensPanel('section-panel-1', 0)]),
+          ],
+        },
+        operations: [
+          {
+            operation: 'update_panel_layouts',
+            panels: [{ panelId: 'top-1', sectionId: 'section-a' }],
+          },
+        ],
+        logger,
+      });
+
+      expect(
+        getSections(result.dashboardData.panels)[0].panels.map(({ id, grid }) => ({ id, grid }))
+      ).toEqual([
+        { id: 'section-panel-1', grid: { x: 0, y: 0, w: 24, h: 9 } },
+        { id: 'top-1', grid: { x: 0, y: 9, w: 24, h: 9 } },
+      ]);
+    });
+
+    it('leaves a panel moved to the container it is already in unchanged', async () => {
+      const dashboardData: DashboardAttachmentData = {
+        title: 'Test dashboard',
+        panels: [
+          createSection('section-a', 'Section A', 0, [
+            createLensPanel('section-panel-1', 0),
+            createLensPanel('section-panel-2', 9),
+          ]),
+        ],
+      };
+
+      const result = await executeDashboardOperations({
+        dashboardData,
+        operations: [
+          {
+            operation: 'update_panel_layouts',
+            panels: [{ panelId: 'section-panel-1', sectionId: 'section-a' }],
+          },
+        ],
+        logger,
+      });
+
+      expect(result.dashboardData).toEqual(dashboardData);
     });
 
     it('records a failure when the target panel is missing', async () => {
