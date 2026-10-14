@@ -40,7 +40,7 @@ export const getWidgetsBottomY = (widgets: DashboardWidget[]): number => {
     if (isSection(widget)) {
       const sectionBottom = widget.panels.reduce(
         (sectionMaxY, panel) => Math.max(sectionMaxY, widget.grid.y + panel.grid.y + panel.grid.h),
-        widget.grid.y
+        widget.grid.y + 1
       );
       return Math.max(maxY, sectionBottom);
     }
