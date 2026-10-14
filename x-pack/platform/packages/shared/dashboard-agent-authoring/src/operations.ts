@@ -41,10 +41,11 @@ export interface FinalizeDashboardContext {
   editedPanelIds: ReadonlySet<string>;
   panelAuthoringNotes: readonly PanelAuthoringNote[];
   /**
-   * Validation discarded every change of the operations, so the hook should not add changes the
-   * user did not ask for, such as a default time range.
+   * The operations left the dashboard unchanged, because none ran, all failed, or validation
+   * discarded every change. The hook should then not add changes the user did not ask for, such as
+   * a default time range.
    */
-  allChangesDiscarded: boolean;
+  dashboardUnchanged: boolean;
   /** Reports a failure to the agent alongside the operation failures. */
   reportFailure: (failure: OperationFailure) => void;
 }
@@ -133,7 +134,6 @@ export const executeDashboardOperations = async ({
     panelAuthoringNotes.filter(({ panelId }) => !discardedPanelIds.has(panelId));
 
   // Discard invalid changes before finalizing, so the layout is arranged for the panels that are kept.
-  const failureCountBeforeValidation = failures.length;
   nextDashboardData = validate(nextDashboardData);
 
   if (finalizeDashboard) {
@@ -144,9 +144,7 @@ export const executeDashboardOperations = async ({
           [...context.editedPanelIds].filter((panelId) => !discardedPanelIds.has(panelId))
         ),
         panelAuthoringNotes: getKeptAuthoringNotes(),
-        allChangesDiscarded:
-          failures.length > failureCountBeforeValidation &&
-          isEqual(nextDashboardData, originalDashboardData),
+        dashboardUnchanged: isEqual(nextDashboardData, originalDashboardData),
         reportFailure: (failure) => failures.push(failure),
       })
     );

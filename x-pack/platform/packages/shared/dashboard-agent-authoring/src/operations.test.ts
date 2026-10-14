@@ -529,24 +529,6 @@ describe('executeDashboardOperations', () => {
         time_range: { from: 'now-15m', to: 'now' },
       }));
 
-    it('tells finalizeDashboard when validation discarded the whole change', async () => {
-      const finalizeDashboard = finalizeWithTimeRange();
-
-      await executeDashboardOperations({
-        dashboardData: { title: 'Dashboard', panels: [] },
-        operations: [{ operation: 'set_metadata', title: 'Renamed' }],
-        logger,
-        finalizeDashboard,
-        validateDashboard: ({ title }) =>
-          title === 'Renamed' ? [{ path: [], message: 'Invalid dashboard' }] : [],
-      });
-
-      expect(finalizeDashboard).toHaveBeenCalledWith(
-        { title: 'Dashboard', panels: [] },
-        expect.objectContaining({ allChangesDiscarded: true })
-      );
-    });
-
     const addPanelsOperation = (queries: string[]): DashboardOperation => ({
       operation: 'add_panels',
       panels: queries.map((query) => ({
@@ -555,7 +537,7 @@ describe('executeDashboardOperations', () => {
         query,
       })),
     });
-    const resolveValidAndInvalidPanels = createResolvePanelContent({
+    const resolveTestPanels = createResolvePanelContent({
       'show requests': createResolvedPanelContent(
         { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric' } },
         'Created a metric showing requests.'
@@ -564,29 +546,76 @@ describe('executeDashboardOperations', () => {
         { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric', unrecognizedKey: true } },
         'Created a metric showing latency.'
       ),
+      'show unknown data': {
+        type: 'failure',
+        failure: {
+          type: DASHBOARD_OPERATION_FAILURE_TYPES.addPanels,
+          identifier: 'show unknown data',
+          error: 'No matching data.',
+        },
+      },
     });
 
     it.each([
       ['every change was discarded separately', ['show latency'], true],
+      ['every operation failed before validation', ['show unknown data'], true],
+      ['no operation ran', [], true],
       ['some changes were kept', ['show requests', 'show latency'], false],
-      ['nothing was discarded', [], false],
     ])(
-      'tells finalizeDashboard whether all changes were discarded when %s',
-      async (_, queries, allChangesDiscarded) => {
+      'tells finalizeDashboard whether the dashboard is unchanged when %s',
+      async (_, queries, dashboardUnchanged) => {
         const finalizeDashboard = finalizeWithTimeRange();
 
         await executeDashboardOperations({
           dashboardData: { title: 'Dashboard', panels: [createLensPanel('existing')] },
           operations: queries.length > 0 ? [addPanelsOperation(queries)] : [],
           logger,
-          resolvePanelContent: resolveValidAndInvalidPanels,
+          resolvePanelContent: resolveTestPanels,
           finalizeDashboard,
           validateDashboard,
         });
 
         expect(finalizeDashboard).toHaveBeenCalledWith(
           expect.anything(),
-          expect.objectContaining({ allChangesDiscarded })
+          expect.objectContaining({ dashboardUnchanged })
+        );
+      }
+    );
+
+    it.each([
+      ['validation discarded the whole change', [{ operation: 'set_metadata', title: 'Renamed' }]],
+      [
+        'validation discarded every new control',
+        [
+          {
+            operation: 'add_controls',
+            controls: [{ type: 'options_list_control', field_name: 'host.name', index: 'logs-*' }],
+          },
+        ],
+      ],
+    ] as Array<[string, DashboardOperation[]]>)(
+      'tells finalizeDashboard the dashboard is unchanged when %s',
+      async (_, operations) => {
+        const originalDashboardData: DashboardAttachmentData = { title: 'Dashboard', panels: [] };
+        const finalizeDashboard = finalizeWithTimeRange();
+
+        await executeDashboardOperations({
+          dashboardData: originalDashboardData,
+          operations,
+          logger,
+          finalizeDashboard,
+          validateDashboard: ({ title, pinned_panels: pinnedPanels = [] }) => [
+            ...(title === 'Renamed' ? [{ path: [], message: 'Invalid dashboard' }] : []),
+            ...pinnedPanels.map((_pinnedPanel, index) => ({
+              path: ['pinned_panels', index, 'config'],
+              message: 'Invalid control',
+            })),
+          ],
+        });
+
+        expect(finalizeDashboard).toHaveBeenCalledWith(
+          originalDashboardData,
+          expect.objectContaining({ dashboardUnchanged: true })
         );
       }
     );
@@ -601,7 +630,7 @@ describe('executeDashboardOperations', () => {
         dashboardData: { title: 'Dashboard', panels: [createLensPanel('existing')] },
         operations: [addPanelsOperation(['show latency'])],
         logger,
-        resolvePanelContent: resolveValidAndInvalidPanels,
+        resolvePanelContent: resolveTestPanels,
         finalizeDashboard: (dashboardData, changes) =>
           arrangeDashboardLayout({
             ...changes,

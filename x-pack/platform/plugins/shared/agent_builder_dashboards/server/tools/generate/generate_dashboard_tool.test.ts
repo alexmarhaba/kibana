@@ -78,14 +78,14 @@ const callHandler = async (dashboardAttachmentId?: string) => {
 };
 
 describe('generateDashboardTool handler', () => {
-  const mockFinalizedDashboard = ({ allChangesDiscarded }: { allChangesDiscarded: boolean }) =>
+  const mockFinalizedDashboard = ({ dashboardUnchanged }: { dashboardUnchanged: boolean }) =>
     mockExecuteDashboardOperations.mockImplementation(async ({ finalizeDashboard }) => ({
       dashboardData: finalizeDashboard
         ? await finalizeDashboard(generatedDashboard, {
             originalDashboardData: generatedDashboard,
             editedPanelIds: new Set(),
             panelAuthoringNotes: [],
-            allChangesDiscarded,
+            dashboardUnchanged,
             reportFailure: jest.fn(),
           })
         : generatedDashboard,
@@ -96,15 +96,15 @@ describe('generateDashboardTool handler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockHasValidCreateMetadataOperations.mockReturnValue(true);
-    mockFinalizedDashboard({ allChangesDiscarded: false });
+    mockFinalizedDashboard({ dashboardUnchanged: false });
   });
 
-  it('does not apply a default time range when all changes were discarded', async () => {
+  it('does not apply a default time range when the operations left the dashboard unchanged', async () => {
     mockRetrieveLatestVersion.mockReturnValue({
       version: 3,
       data: generatedDashboard,
     } as ReturnType<typeof retrieveLatestVersion>);
-    mockFinalizedDashboard({ allChangesDiscarded: true });
+    mockFinalizedDashboard({ dashboardUnchanged: true });
 
     const { attachments, sendUiEvent } = await callHandler('dashboard-attachment-id');
 

@@ -178,7 +178,7 @@ Panel positions and sizes are set automatically after the operations run. Set \`
           finalizeDashboard: async (generatedDashboardData, changes) =>
             arrangeDashboardLayout({
               ...changes,
-              dashboardData: changes.allChangesDiscarded
+              dashboardData: changes.dashboardUnchanged
                 ? generatedDashboardData
                 : await applyDefaultDashboardTimeRange({
                     dashboardData: generatedDashboardData,
