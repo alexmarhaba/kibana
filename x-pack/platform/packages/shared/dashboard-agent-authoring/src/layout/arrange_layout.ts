@@ -114,24 +114,53 @@ const requestArrangement = async ({
 }): Promise<LayoutArrangement | undefined> => {
   try {
     const result = layoutArrangementSchema.safeParse(await arrangeLayout(request));
-    if (result.success) {
-      return result.data;
+    if (!result.success) {
+      logger.warn(`Dashboard layout returned an invalid arrangement: ${result.error.message}`);
+      return undefined;
     }
-    logger.warn(`Dashboard layout returned an invalid arrangement: ${result.error.message}`);
+    const issue = getIncompleteArrangementIssue(request, result.data);
+    if (issue) {
+      logger.warn(`Dashboard layout returned an incomplete arrangement: ${issue}`);
+      return undefined;
+    }
+    return result.data;
   } catch (error) {
     logger.warn(`Dashboard layout failed, keeping the current layout: ${getErrorMessage(error)}`);
   }
   return undefined;
 };
 
-/** Applies the returned grids; panels that are missing or would overflow the grid keep theirs. */
+/**
+ * Applying only part of an arrangement mixes the old and the new layout, so an arrangement that
+ * misses a panel or section, or overflows the grid, is rejected as a whole.
+ */
+const getIncompleteArrangementIssue = (
+  { panels, sections }: LayoutRequest,
+  arrangement: LayoutArrangement
+): string | undefined => {
+  const overflowingPanel = arrangement.panels.find(({ x, w }) => x + w > GRID_COLUMNS);
+  if (overflowingPanel) {
+    return `panel "${overflowingPanel.id}" overflows the ${GRID_COLUMNS}-column grid`;
+  }
+
+  const arrangedPanelIds = new Set(arrangement.panels.map(({ id }) => id));
+  const missingPanel = [...panels, ...sections.flatMap((section) => section.panels)].find(
+    ({ id }) => !arrangedPanelIds.has(id)
+  );
+  if (missingPanel) {
+    return `panel "${missingPanel.id}" is missing`;
+  }
+
+  const arrangedSectionIds = new Set(arrangement.sections.map(({ id }) => id));
+  const missingSection = sections.find(({ id }) => !arrangedSectionIds.has(id));
+  return missingSection ? `section "${missingSection.id}" is missing` : undefined;
+};
+
 const applyArrangement = (
   dashboardData: DashboardAttachmentData,
   { panels, sections }: LayoutArrangement
 ): DashboardAttachmentData => {
-  const gridByPanelId = new Map(
-    panels.filter(({ x, w }) => x + w <= GRID_COLUMNS).map(({ id, ...grid }) => [id, grid])
-  );
+  const gridByPanelId = new Map(panels.map(({ id, ...grid }) => [id, grid]));
   const sectionYById = new Map(sections.map(({ id, y }) => [id, y]));
   const placePanel = (panel: AttachmentPanel): AttachmentPanel => ({
     ...panel,
