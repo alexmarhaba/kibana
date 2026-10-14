@@ -86,6 +86,7 @@ describe('generateDashboardTool handler', () => {
             originalDashboardData: generatedDashboard,
             editedPanelIds: new Set(),
             panelAuthoringNotes: [],
+            reportFailure: jest.fn(),
           })
         : generatedDashboard,
       failures: [],

@@ -12,7 +12,8 @@ import {
   type DashboardAttachmentData,
 } from '@kbn/agent-builder-dashboards-common';
 import { indexPanelsById } from '../dashboard_state';
-import { getErrorMessage } from '../utils';
+import { DASHBOARD_OPERATION_FAILURE_TYPES } from '../failure_types';
+import { getErrorMessage, type OperationFailure } from '../utils';
 import type { PanelAuthoringNote } from '../resolve_panel';
 import {
   GRID_COLUMNS,
@@ -32,13 +33,14 @@ interface ArrangeLayoutParams {
   /** The user's own arrangement or size request. */
   instructions?: string;
   arrangeLayout: ArrangeDashboardLayout;
+  reportFailure: (failure: OperationFailure) => void;
   logger: Logger;
 }
 
 /**
  * Sets the grid of every panel and section with the injected `arrangeLayout` model call, when the
  * panels changed or the user asked for a layout change. When the call fails, the dashboard keeps
- * its current layout.
+ * its current layout, and a failure is reported if the user asked for a layout change.
  */
 export const arrangeDashboardLayout = async ({
   originalDashboardData,
@@ -47,6 +49,7 @@ export const arrangeDashboardLayout = async ({
   panelAuthoringNotes,
   instructions,
   arrangeLayout,
+  reportFailure,
   logger,
 }: ArrangeLayoutParams): Promise<DashboardAttachmentData> => {
   if (
@@ -96,38 +99,41 @@ export const arrangeDashboardLayout = async ({
     })),
   };
 
-  const arrangement = await requestArrangement({ arrangeLayout, request, logger });
-  return arrangement ? applyArrangement(dashboardData, arrangement) : dashboardData;
+  const result = await requestArrangement(arrangeLayout, request);
+  if ('arrangement' in result) {
+    return applyArrangement(dashboardData, result.arrangement);
+  }
+
+  logger.warn(`Dashboard layout kept the current layout: ${result.error}`);
+  // The agent no longer sees grids, so it can only learn from a failure that the user's request
+  // was not applied.
+  if (instructions !== undefined) {
+    reportFailure({
+      type: DASHBOARD_OPERATION_FAILURE_TYPES.layout,
+      identifier: 'layout',
+      error: `The layout request was not applied, so panel positions and sizes are unchanged: ${result.error}`,
+    });
+  }
+  return dashboardData;
 };
 
 const byReadingOrder = (a: AttachmentPanel, b: AttachmentPanel): number =>
   a.grid.y - b.grid.y || a.grid.x - b.grid.x;
 
-const requestArrangement = async ({
-  arrangeLayout,
-  request,
-  logger,
-}: {
-  arrangeLayout: ArrangeDashboardLayout;
-  request: LayoutRequest;
-  logger: Logger;
-}): Promise<LayoutArrangement | undefined> => {
+const requestArrangement = async (
+  arrangeLayout: ArrangeDashboardLayout,
+  request: LayoutRequest
+): Promise<{ arrangement: LayoutArrangement } | { error: string }> => {
   try {
     const result = layoutArrangementSchema.safeParse(await arrangeLayout(request));
     if (!result.success) {
-      logger.warn(`Dashboard layout returned an invalid arrangement: ${result.error.message}`);
-      return undefined;
+      return { error: `invalid arrangement: ${result.error.message}` };
     }
     const issue = getIncompleteArrangementIssue(request, result.data);
-    if (issue) {
-      logger.warn(`Dashboard layout returned an incomplete arrangement: ${issue}`);
-      return undefined;
-    }
-    return result.data;
+    return issue ? { error: `incomplete arrangement: ${issue}` } : { arrangement: result.data };
   } catch (error) {
-    logger.warn(`Dashboard layout failed, keeping the current layout: ${getErrorMessage(error)}`);
+    return { error: `layout call failed: ${getErrorMessage(error)}` };
   }
-  return undefined;
 };
 
 /**

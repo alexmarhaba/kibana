@@ -39,6 +39,8 @@ export interface FinalizeDashboardContext {
   /** Existing panels whose content was edited. */
   editedPanelIds: ReadonlySet<string>;
   panelAuthoringNotes: readonly PanelAuthoringNote[];
+  /** Reports a failure to the agent alongside the operation failures. */
+  reportFailure: (failure: OperationFailure) => void;
 }
 
 /**
@@ -135,6 +137,7 @@ export const executeDashboardOperations = async ({
           [...context.editedPanelIds].filter((panelId) => !discardedPanelIds.has(panelId))
         ),
         panelAuthoringNotes: getKeptAuthoringNotes(),
+        reportFailure: (failure) => failures.push(failure),
       })
     );
   }
