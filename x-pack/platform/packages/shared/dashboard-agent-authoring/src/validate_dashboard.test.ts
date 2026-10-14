@@ -292,8 +292,12 @@ describe('discardInvalidChanges', () => {
     expect(result.dashboardData).toEqual(originalDashboardData);
   });
 
-  it('keeps an emptied controls list when the dashboard had controls', () => {
-    const originalDashboardData = { title: 'Dashboard', panels: [], pinned_panels: [] };
+  it('keeps the removal of all existing controls when the new controls are dropped', () => {
+    const originalDashboardData = {
+      title: 'Dashboard',
+      panels: [],
+      pinned_panels: [{ field: 'host.name' }],
+    };
 
     const result = discardInvalidChanges({
       originalDashboardData,
@@ -301,7 +305,7 @@ describe('discardInvalidChanges', () => {
       validateDashboard,
     });
 
-    expect(result.dashboardData).toEqual(originalDashboardData);
+    expect(result.dashboardData).toEqual({ ...originalDashboardData, pinned_panels: [] });
   });
 
   it('reverts an invalid change to a dashboard field', () => {
