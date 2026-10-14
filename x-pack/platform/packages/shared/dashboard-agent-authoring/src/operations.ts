@@ -53,10 +53,10 @@ export type FinalizeDashboard = (
  * persistence, and result shape belong to the calling tool. Inline panel content
  * is resolved via the injected `resolvePanelContent` callback, so the core never
  * reads any store. Control fields are validated against index mappings when
- * the host provides `resolveControlFieldCapabilities`. New and moved panels and
- * sections are packed below the existing ones. The host can complete the result
- * with `finalizeDashboard` (e.g. a default time range, or arranging the layout)
- * before it is validated. When the host provides `validateDashboard`, changes
+ * the host provides `resolveControlFieldCapabilities`. New panels and sections
+ * are placed below the existing ones, two panels per row. The host can complete
+ * the result with `finalizeDashboard` (e.g. a default time range, or arranging
+ * the layout) before it is validated. When the host provides `validateDashboard`, changes
  * that make the dashboard invalid are discarded and reported as failures.
  */
 export const executeDashboardOperations = async ({

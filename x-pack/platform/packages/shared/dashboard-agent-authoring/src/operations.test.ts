@@ -1258,7 +1258,7 @@ describe('executeDashboardOperations', () => {
       ]);
     });
 
-    it('stacks new panels below existing panels, which keep their place, without a layout call', async () => {
+    it('places new panels two per row next to and below existing panels, which keep their place, without a layout call', async () => {
       const result = await executeDashboardOperations({
         dashboardData: { title: 'Test dashboard', panels: [createLensPanel('existing', 0)] },
         operations: [
@@ -1281,8 +1281,8 @@ describe('executeDashboardOperations', () => {
       expect(result.failures).toEqual([]);
       expect(getPanelsOnly(result.dashboardData.panels).map(({ grid }) => grid)).toEqual([
         { x: 0, y: 0, w: 24, h: 9 },
-        { x: 0, y: 9, w: 24, h: 10 },
-        { x: 0, y: 19, w: 24, h: 10 },
+        { x: 24, y: 0, w: 24, h: 10 },
+        { x: 0, y: 10, w: 24, h: 10 },
       ]);
     });
 

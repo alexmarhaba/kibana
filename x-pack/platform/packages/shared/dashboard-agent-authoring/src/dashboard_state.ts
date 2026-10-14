@@ -11,6 +11,7 @@ import type {
   DashboardSection,
 } from '@kbn/agent-builder-dashboards-common';
 import { isSection } from '@kbn/agent-builder-dashboards-common';
+import { DEFAULT_PANEL_SIZE, GRID_COLUMNS } from './layout/types';
 
 type DashboardWidget = AttachmentPanel | DashboardSection;
 
@@ -52,15 +53,52 @@ export const findSectionIndex = (panels: DashboardWidget[], sectionId: string): 
   return panels.findIndex((widget) => isSection(widget) && widget.id === sectionId);
 };
 
-/** Returns the first free row of a section, or of the top-level grid when no section is given. */
-export const getContainerBottomY = (
+/** Returns the widgets of a section, or of the top-level grid when no section is given. */
+export const getContainerWidgets = (
   { panels }: DashboardAttachmentData,
   sectionId?: string
-): number => {
+): DashboardWidget[] => {
   const section = panels.find(
     (widget): widget is DashboardSection => isSection(widget) && widget.id === sectionId
   );
-  return getWidgetsBottomY(section ? section.panels : panels);
+  return section ? section.panels : panels;
+};
+
+type PanelGrid = AttachmentPanel['grid'];
+
+const toPanelGrid = (widget: DashboardWidget): PanelGrid =>
+  isSection(widget)
+    ? {
+        x: 0,
+        y: widget.grid.y,
+        w: GRID_COLUMNS,
+        h: Math.max(getWidgetsBottomY([widget]) - widget.grid.y, 1),
+      }
+    : widget.grid;
+
+/**
+ * Returns the grid of a new panel until the layout call places it: default-size panels, two per
+ * row, below the existing widgets of the container and never overlapping them.
+ */
+export const getTemporaryPanelGrid = (widgets: DashboardWidget[]): PanelGrid => {
+  const { w, h } = DEFAULT_PANEL_SIZE;
+  const grids = widgets.map(toPanelGrid);
+  const lastGrid = grids.reduce<PanelGrid | undefined>((last, grid) => {
+    if (!last) return grid;
+    const bottom = grid.y + grid.h;
+    const lastBottom = last.y + last.h;
+    return bottom > lastBottom || (bottom === lastBottom && grid.y > last.y) ? grid : last;
+  }, undefined);
+
+  if (!lastGrid) {
+    return { x: 0, y: 0, w, h };
+  }
+
+  const rowY = lastGrid.y;
+  const isRightHalfFree = !grids.some(
+    (grid) => grid.x + grid.w > w && grid.y < rowY + h && grid.y + grid.h > rowY
+  );
+  return isRightHalfFree ? { x: w, y: rowY, w, h } : { x: 0, y: getWidgetsBottomY(widgets), w, h };
 };
 
 export const appendPanelsToDashboard = ({

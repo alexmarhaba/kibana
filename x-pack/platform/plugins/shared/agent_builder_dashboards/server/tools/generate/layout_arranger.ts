@@ -14,7 +14,7 @@ import {
 
 /**
  * Arranges dashboard containers with a dedicated model call. Errors propagate to the layout step,
- * which falls back to a deterministic placement.
+ * which keeps the current layout.
  */
 export const createLayoutArranger =
   ({ modelProvider }: { modelProvider: ModelProvider }): ArrangeDashboardLayout =>

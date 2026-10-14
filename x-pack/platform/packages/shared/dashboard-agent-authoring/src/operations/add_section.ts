@@ -11,8 +11,7 @@ import { z } from '@kbn/zod/v4';
 import { createPanelInputMaterializer } from './panel_creation';
 import { defineOperation } from './types';
 import { addSectionPanelItemSchema } from './panels';
-import { findSectionIndex } from '../dashboard_state';
-import { DEFAULT_PANEL_SIZE } from '../layout/types';
+import { findSectionIndex, getTemporaryPanelGrid, getWidgetsBottomY } from '../dashboard_state';
 
 export const addSectionOperation = defineOperation({
   schema: z.object({
@@ -49,7 +48,7 @@ export const addSectionOperation = defineOperation({
       id: uuidv4(),
       title: operation.title,
       collapsed: false,
-      grid: { y: 0 },
+      grid: { y: getWidgetsBottomY(dashboardData.panels) },
       panels: [],
     };
 
@@ -73,7 +72,7 @@ export const addSectionOperation = defineOperation({
         sectionPanels.push({
           id: panelId,
           ...panel.panelContent,
-          grid: { x: 0, y: sectionPanels.length * DEFAULT_PANEL_SIZE.h, ...DEFAULT_PANEL_SIZE },
+          grid: getTemporaryPanelGrid(sectionPanels),
         });
         if (panel.authoringNote) {
           context.panelAuthoringNotes.push({
