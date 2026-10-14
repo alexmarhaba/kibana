@@ -52,10 +52,25 @@ export const arrangeDashboardLayout = async ({
   reportFailure,
   logger,
 }: ArrangeLayoutParams): Promise<DashboardAttachmentData> => {
+  const reportUnappliedRequest = (reason: string) => {
+    // The agent no longer sees grids, so it can only learn from a failure that the user's request
+    // was not applied.
+    if (instructions !== undefined) {
+      reportFailure({
+        type: DASHBOARD_OPERATION_FAILURE_TYPES.layout,
+        identifier: 'layout',
+        error: `The layout request was not applied, so panel positions and sizes are unchanged: ${reason}`,
+      });
+    }
+  };
+
+  if (dashboardData.panels.length === 0) {
+    reportUnappliedRequest('the dashboard has no panels');
+    return dashboardData;
+  }
   if (
-    dashboardData.panels.length === 0 ||
-    (instructions === undefined &&
-      JSON.stringify(originalDashboardData.panels) === JSON.stringify(dashboardData.panels))
+    instructions === undefined &&
+    JSON.stringify(originalDashboardData.panels) === JSON.stringify(dashboardData.panels)
   ) {
     return dashboardData;
   }
@@ -105,15 +120,7 @@ export const arrangeDashboardLayout = async ({
   }
 
   logger.warn(`Dashboard layout kept the current layout: ${result.error}`);
-  // The agent no longer sees grids, so it can only learn from a failure that the user's request
-  // was not applied.
-  if (instructions !== undefined) {
-    reportFailure({
-      type: DASHBOARD_OPERATION_FAILURE_TYPES.layout,
-      identifier: 'layout',
-      error: `The layout request was not applied, so panel positions and sizes are unchanged: ${result.error}`,
-    });
-  }
+  reportUnappliedRequest(result.error);
   return dashboardData;
 };
 

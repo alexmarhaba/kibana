@@ -192,6 +192,24 @@ describe('arrangeDashboardLayout', () => {
     expect(reportFailure).not.toHaveBeenCalled();
   });
 
+  it('reports a failure when a layout request is made for a dashboard without panels', async () => {
+    const arrangeLayout = jest.fn();
+    const dashboardData: DashboardAttachmentData = { title: 'Dashboard', panels: [] };
+
+    const result = await arrange(arrangeLayout, {
+      dashboardData,
+      instructions: 'make the table full width',
+    });
+
+    expect(arrangeLayout).not.toHaveBeenCalled();
+    expect(result).toBe(dashboardData);
+    expect(reportFailure).toHaveBeenCalledWith({
+      type: DASHBOARD_OPERATION_FAILURE_TYPES.layout,
+      identifier: 'layout',
+      error: expect.stringContaining('the dashboard has no panels'),
+    });
+  });
+
   it('reports a failure when a layout request is not applied', async () => {
     const result = await arrange(async () => ({ ...completeArrangement, sections: [] }), {
       instructions: 'make the new panel full width',
