@@ -6,109 +6,74 @@
  */
 
 import { z } from '@kbn/zod/v4';
-import type { SizeClassName } from './panel_sizes';
 
 export const GRID_COLUMNS = 48;
 
-export interface PanelSize {
-  w: number;
-  h: number;
-}
+/** Size of a new panel until the layout call places it. */
+export const DEFAULT_PANEL_SIZE = { w: 24, h: 10 } as const;
 
-/** A panel as the layout step sees it. */
+/** A panel as the layout call sees it. */
 export interface LayoutPanel {
-  kind: 'panel';
   id: string;
   /** Embeddable type, e.g. `lens` or `markdown`. */
   type: string;
   /** Lens chart type, e.g. `metric` or `xy`, when known. */
   chartType?: string;
   title?: string;
-  /** One-sentence description of what the panel shows, when the panel was authored this turn. */
+  /** What the panel shows, when the panel was authored in this call. */
   authoringNote?: string;
-  /** Size class that bounds the panel size, when the panel type has one. */
-  sizeClass?: SizeClassName;
-  size: PanelSize;
-  /** Lines the text of a markdown panel takes at full width. */
-  textLines?: number;
-  /** Added in this call, or moved into this container. */
+  /** Length of the text of a markdown panel. */
+  markdownLength?: number;
+  grid: { x: number; y: number; w: number; h: number };
+  /** Added in this call. */
   isNew: boolean;
-  /** Existing panel whose content was edited in this call, so its size may no longer fit. */
+  /** Content edited in this call, so its size may no longer fit. */
   contentChanged: boolean;
 }
 
-/** A section as an item of the top-level container. */
-export interface LayoutSectionItem {
-  kind: 'section';
+export interface LayoutSection {
   id: string;
   title: string;
+  y: number;
   isNew: boolean;
-}
-
-/**
- * A grid to arrange: the top level (`section: null`), which holds top-level panels and sections, or
- * a section, which holds its panels. Items are listed in their current reading order.
- */
-export interface LayoutContainer {
-  section: string | null;
-  title?: string;
-  items: Array<LayoutPanel | LayoutSectionItem>;
-  /** Ids of the existing items, grouped into their current rows top to bottom. */
-  currentRows: string[][];
+  /** Panels of the section, with coordinates relative to the section. */
+  panels: LayoutPanel[];
 }
 
 export interface LayoutRequest {
   dashboardTitle: string;
   dashboardDescription?: string;
-  /** Layout instructions from the user, when the call asked for a relayout. */
+  /** The user's own arrangement or size request. */
   instructions?: string;
-  containers: LayoutContainer[];
+  panels: LayoutPanel[];
+  sections: LayoutSection[];
 }
 
-const rowItemSchema = z.object({
-  id: z.string().max(256).describe('Id of a panel or section in this container.'),
-  w: z
-    .number()
-    .int()
-    .min(1)
-    .max(GRID_COLUMNS)
-    .describe('Panel width in grid columns. Ignored for sections.'),
-});
-
-const rowSchema = z.object({
-  h: z
-    .number()
-    .int()
-    .min(1)
-    .max(100)
-    .describe('Height of the panels in this row, in grid rows. Ignored for sections.'),
-  items: z
-    .array(rowItemSchema)
-    .min(1)
-    .max(GRID_COLUMNS)
-    .describe('Items left to right. Widths should add up to 48.'),
-});
-
-/** Rows per container returned by the layout step. Code turns them into grid positions. */
+/** Grid positions returned by the layout call. */
 export const layoutArrangementSchema = z.object({
-  containers: z
+  panels: z
     .array(
       z.object({
-        section: z
-          .string()
-          .max(256)
-          .nullable()
-          .describe('Section id of the container, or null for the top level.'),
-        rows: z.array(rowSchema).max(200).describe('Rows top to bottom.'),
+        id: z.string().max(256),
+        x: z
+          .number()
+          .int()
+          .min(0)
+          .max(GRID_COLUMNS - 1),
+        y: z.number().int().min(0).max(1000),
+        w: z.number().int().min(1).max(GRID_COLUMNS),
+        h: z.number().int().min(1).max(100),
       })
     )
-    .max(200),
+    .max(500)
+    .describe('Every panel, top level and in sections. Section panels use section-relative y.'),
+  sections: z
+    .array(z.object({ id: z.string().max(256), y: z.number().int().min(0).max(1000) }))
+    .max(100)
+    .describe('Every section, with its row in the top-level grid.'),
 });
 
 export type LayoutArrangement = z.infer<typeof layoutArrangementSchema>;
 
-/**
- * Arranges the containers of a layout request into rows. Injected by the host, which runs it as a
- * separate model call. On errors and invalid output, the containers keep their current layout.
- */
+/** Arranges the dashboard with a separate model call. Injected by the host. */
 export type ArrangeDashboardLayout = (request: LayoutRequest) => Promise<LayoutArrangement>;

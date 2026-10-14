@@ -5,8 +5,7 @@
  * 2.0.
  */
 
-export { arrangeDashboardLayout, placeNewItems } from './arrange_layout';
+export { arrangeDashboardLayout } from './arrange_layout';
 export { buildLayoutPrompt } from './layout_prompt';
-export { getDefaultPanelSize } from './panel_sizes';
-export { GRID_COLUMNS, layoutArrangementSchema } from './types';
-export type { ArrangeDashboardLayout, LayoutArrangement, LayoutRequest, PanelSize } from './types';
+export { DEFAULT_PANEL_SIZE, GRID_COLUMNS, layoutArrangementSchema } from './types';
+export type { ArrangeDashboardLayout, LayoutArrangement, LayoutRequest } from './types';

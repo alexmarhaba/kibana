@@ -5,40 +5,48 @@
  * 2.0.
  */
 
-import { formatSizeClasses } from './panel_sizes';
 import type { LayoutRequest } from './types';
 
-const LAYOUT_SYSTEM_PROMPT = `You arrange the panels of a Kibana dashboard on a grid 48 columns wide. You receive the containers that changed: the top level (\`section: null\`), which holds top-level panels and sections, and sections, which hold their own panels. Return each container as rows, top to bottom. A row lists its items left to right with a width \`w\` and has one height \`h\`. Every item must appear exactly once, in its own container.
+const LAYOUT_SYSTEM_PROMPT = `You lay out the panels of a Kibana dashboard. Return the grid \`{ x, y, w, h }\` of every panel and the \`y\` of every section.
+
+The dashboard uses a **48-column grid**; the origin \`(0, 0)\` is the top-left corner. On a 16:9 screen, roughly **20–24 rows** are visible without scrolling. Aim for **8–12 panels above the fold**.
 
 ## Priorities
 
-1. The user's layout and size request in \`instructions\`.
-2. Few gaps: the widths of a row add up to 48. Never leave an empty row.
-3. Panel sizes within the ranges below.
-4. Stability: change as little as possible of the current arrangement.
+1. The user's request in \`instructions\`, when given. It may override the sizes below.
+2. Stability: existing panels keep their position and size unless something changed around them (\`isNew\`, \`contentChanged\`, a removed panel leaving a gap) or \`instructions\` ask for a change. The user may have arranged them by hand.
+3. No gaps and no overlaps.
+4. Sizes by chart type.
 
-## Panel sizes
+## Sizes by chart type
 
-Each panel has a \`sizeClass\` and its current \`size\`. Keep its size within the range of its class:
+Do not make metric or gauge panels full width.
 
-${formatSizeClasses()}
+- **Metric** (\`chartType: metric\`) → \`w: 6, 8, or 12, h: 5–6\`. Fit 4–8 per row: 8 metrics at \`w: 6\`, 6 at \`w: 8\`, 4 at \`w: 12\`.
+- **Gauge** → \`w: 12, h: 8\`. Up to 4 per row.
+- **XY (line / area / bar)** → \`w: 24, h: 10\`. Use full width for the primary time series.
+- **Heatmap, tag cloud, treemap, waffle, mosaic** → \`w: 24, h: 10\`.
+- **Pie / donut** → \`w: 12, h: 10\`.
+- **Data table** → \`w: 24–48, h: 12–16\`. Prefer full width so columns are readable.
+- **Markdown** → \`w: 24–48\`, \`h\` from \`markdownLength\`: about \`h: 3–4\` for a sentence or two, \`h: 5–9\` for longer text.
+- **Vega, custom content, ML panels** → \`w: 24–48\`. Size \`h\` for what the panel shows (use \`authoringNote\`): a single KPI card \`h: 6–8\`, a list or table of rows \`h: 10–16\`, a multi-part layout or drawn chart \`h: 16–20\`. Too short makes the panel scroll; too tall leaves an empty gap.
 
-To close a gap, widen panels up to the largest width of their class. If a row still has a gap, rather move its panels into the row above, narrowing the panels there no lower than their smallest width. Put panels of similar height in the same row.
+Prefer widths that divide 48 evenly: 6, 8, 12, 24, 48.
 
-A size the user asks for may leave the range of its class. Size a relative request ("bigger", "smaller") from the panel's current \`size\`.
+## Packing
 
-Markdown panels list their text length in \`textLines\`; code sets the height of new and edited markdown panels. Panels with \`contentChanged: true\` were edited: size them again for their new content and keep their place.
+- Fill rows left to right from \`x: 0\`; the next panel's \`x\` is the previous \`x + w\`. \`x + w\` never exceeds 48.
+- The next row's \`y\` is the previous row's \`y + max(h)\`. Panels in one row share the same \`h\`.
+- The widths of a row add up to 48. After a removal or resize, move panels up or widen them to close the gap.
+- Place new panels by purpose, next to related panels. In a new dashboard, lead with a markdown introduction when there is one, then metrics and gauges, then trends, then breakdowns and tables.
 
-## Current arrangement
+## Sections
 
-\`currentRows\` lists the existing items of a container row by row, as they are now; the user may have arranged them by hand. Keep these rows unless something in this container changed: a new item, an edited or removed panel, or a layout request. Then rearrange only as much as that change needs, e.g. close the gap left by a removed panel, or fit a new panel into a row with room.
-
-## New items
-
-Place new items by purpose, next to related items: in a row with room, or in a new row. In a new dashboard, lead with a markdown introduction when there is one, then metrics and gauges, then trends, then breakdowns and tables. At the top level, put panels above sections. A section always takes a row of its own; its \`w\` and the row \`h\` are ignored.`;
+- Each section has its own grid: the coordinates of its panels are relative to the section and start at \`y: 0\`.
+- In the top-level grid, a section takes exactly one row. Top-level panels advance \`y\` by their \`h\`, sections by 1. Put top-level panels above sections.`;
 
 /** Builds the messages of the layout call for a layout request. */
 export const buildLayoutPrompt = (request: LayoutRequest): { system: string; user: string } => ({
   system: LAYOUT_SYSTEM_PROMPT,
-  user: `Arrange these containers:\n\n${JSON.stringify(request, null, 2)}`,
+  user: `Lay out this dashboard:\n\n${JSON.stringify(request, null, 2)}`,
 });

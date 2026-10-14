@@ -31,22 +31,6 @@ export const indexPanelsById = (
   return index;
 };
 
-export const getSectionsById = ({
-  panels,
-}: DashboardAttachmentData): Map<string, DashboardSection> =>
-  new Map(panels.filter(isSection).map((section) => [section.id, section]));
-
-/** Section id of every panel, or null for panels at the top level. */
-export const getSectionIdByPanelId = ({
-  panels,
-}: DashboardAttachmentData): Map<string, string | null> =>
-  new Map(
-    panels.flatMap(
-      (widget): Array<[string, string | null]> =>
-        isSection(widget) ? widget.panels.map(({ id }) => [id, widget.id]) : [[widget.id, null]]
-    )
-  );
-
 /**
  * Returns the lowest occupied y-position across top-level panels and section contents.
  */
@@ -66,6 +50,17 @@ export const getWidgetsBottomY = (widgets: DashboardWidget[]): number => {
 
 export const findSectionIndex = (panels: DashboardWidget[], sectionId: string): number => {
   return panels.findIndex((widget) => isSection(widget) && widget.id === sectionId);
+};
+
+/** Returns the first free row of a section, or of the top-level grid when no section is given. */
+export const getContainerBottomY = (
+  { panels }: DashboardAttachmentData,
+  sectionId?: string
+): number => {
+  const section = panels.find(
+    (widget): widget is DashboardSection => isSection(widget) && widget.id === sectionId
+  );
+  return getWidgetsBottomY(section ? section.panels : panels);
 };
 
 export const appendPanelsToDashboard = ({

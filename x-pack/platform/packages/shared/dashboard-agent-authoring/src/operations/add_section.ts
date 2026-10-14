@@ -12,7 +12,7 @@ import { createPanelInputMaterializer } from './panel_creation';
 import { defineOperation } from './types';
 import { addSectionPanelItemSchema } from './panels';
 import { findSectionIndex } from '../dashboard_state';
-import { getDefaultPanelSize } from '../layout/panel_sizes';
+import { DEFAULT_PANEL_SIZE } from '../layout/types';
 
 export const addSectionOperation = defineOperation({
   schema: z.object({
@@ -73,7 +73,7 @@ export const addSectionOperation = defineOperation({
         sectionPanels.push({
           id: panelId,
           ...panel.panelContent,
-          grid: { x: 0, y: 0, ...getDefaultPanelSize(panel.panelContent) },
+          grid: { x: 0, y: sectionPanels.length * DEFAULT_PANEL_SIZE.h, ...DEFAULT_PANEL_SIZE },
         });
         if (panel.authoringNote) {
           context.panelAuthoringNotes.push({

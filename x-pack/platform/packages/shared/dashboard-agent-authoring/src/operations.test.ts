@@ -1242,13 +1242,8 @@ describe('executeDashboardOperations', () => {
             instructions: 'make section-panel-1 smaller',
             logger,
             arrangeLayout: async () => ({
-              containers: [
-                { section: null, rows: [{ h: 1, items: [{ id: 'section-a', w: 48 }] }] },
-                {
-                  section: 'section-a',
-                  rows: [{ h: 6, items: [{ id: 'section-panel-1', w: 12 }] }],
-                },
-              ],
+              panels: [{ id: 'section-panel-1', x: 0, y: 0, w: 12, h: 6 }],
+              sections: [{ id: 'section-a', y: 0 }],
             }),
           }),
       });
@@ -1263,7 +1258,7 @@ describe('executeDashboardOperations', () => {
       ]);
     });
 
-    it('packs new panels below existing panels, which keep their place, without a layout call', async () => {
+    it('stacks new panels below existing panels, which keep their place, without a layout call', async () => {
       const result = await executeDashboardOperations({
         dashboardData: { title: 'Test dashboard', panels: [createLensPanel('existing', 0)] },
         operations: [
@@ -1286,8 +1281,8 @@ describe('executeDashboardOperations', () => {
       expect(result.failures).toEqual([]);
       expect(getPanelsOnly(result.dashboardData.panels).map(({ grid }) => grid)).toEqual([
         { x: 0, y: 0, w: 24, h: 9 },
-        { x: 0, y: 9, w: 12, h: 5 },
-        { x: 0, y: 14, w: 48, h: 3 },
+        { x: 0, y: 9, w: 24, h: 10 },
+        { x: 0, y: 19, w: 24, h: 10 },
       ]);
     });
 

@@ -12,7 +12,6 @@ import type { ResolveAttachmentPanel, ResolveControlFieldCapabilities } from './
 import type { OperationFailure } from './utils';
 import type { PanelAuthoringNote } from './resolve_panel';
 import { discardInvalidChanges, type ValidateDashboard } from './validate_dashboard';
-import { placeNewItems } from './layout';
 import {
   dashboardOperationSchema,
   executeOperationHandler,
@@ -103,8 +102,6 @@ export const executeDashboardOperations = async ({
       context,
     });
   }
-
-  nextDashboardData = placeNewItems({ originalDashboardData, dashboardData: nextDashboardData });
 
   if (finalizeDashboard) {
     nextDashboardData = await finalizeDashboard(nextDashboardData, {
