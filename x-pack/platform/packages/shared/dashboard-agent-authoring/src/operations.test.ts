@@ -549,6 +549,62 @@ describe('executeDashboardOperations', () => {
       ]);
     });
 
+    it('skips finalizeDashboard when validation discarded each change separately', async () => {
+      const originalDashboardData: DashboardAttachmentData = {
+        title: 'Dashboard',
+        panels: [createLensPanel('existing')],
+      };
+      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
+        ...dashboardData,
+        time_range: { from: 'now-15m', to: 'now' },
+      }));
+
+      const result = await executeDashboardOperations({
+        dashboardData: originalDashboardData,
+        operations: [
+          {
+            operation: 'add_panels',
+            panels: [
+              { source: 'request', chartType: SupportedChartType.Metric, query: 'show latency' },
+            ],
+          },
+        ],
+        logger,
+        resolvePanelContent: createResolvePanelContent({
+          'show latency': createResolvedPanelContent(
+            { type: LENS_EMBEDDABLE_TYPE, config: { type: 'metric', unrecognizedKey: true } },
+            'Created a metric showing latency.'
+          ),
+        }),
+        finalizeDashboard,
+        validateDashboard,
+      });
+
+      expect(finalizeDashboard).not.toHaveBeenCalled();
+      expect(result.dashboardData).toEqual(originalDashboardData);
+      expect(result.failures).toEqual([
+        expect.objectContaining({ type: DASHBOARD_OPERATION_FAILURE_TYPES.validateDashboard }),
+      ]);
+    });
+
+    it('finalizes a call without discarded changes even when nothing else changed', async () => {
+      const finalizeDashboard = jest.fn(async (dashboardData: DashboardAttachmentData) => ({
+        ...dashboardData,
+        time_range: { from: 'now-15m', to: 'now' },
+      }));
+
+      const result = await executeDashboardOperations({
+        dashboardData: { title: 'Dashboard', panels: [createLensPanel('existing')] },
+        operations: [],
+        logger,
+        finalizeDashboard,
+        validateDashboard,
+      });
+
+      expect(finalizeDashboard).toHaveBeenCalled();
+      expect(result.dashboardData.time_range).toEqual({ from: 'now-15m', to: 'now' });
+    });
+
     it('returns the failures finalizeDashboard reports', async () => {
       const result = await executeDashboardOperations({
         dashboardData: { title: 'Dashboard', panels: [createLensPanel('panel-1')] },

@@ -7,6 +7,7 @@
 
 import type { DashboardAttachmentData } from '@kbn/agent-builder-dashboards-common';
 import type { Logger } from '@kbn/logging';
+import { isEqual } from 'lodash';
 import type { ResolvePanelContent } from './operations/panels';
 import type { ResolveAttachmentPanel, ResolveControlFieldCapabilities } from './operations/types';
 import type { OperationFailure } from './utils';
@@ -127,10 +128,13 @@ export const executeDashboardOperations = async ({
     panelAuthoringNotes.filter(({ panelId }) => !discardedPanelIds.has(panelId));
 
   // Discard invalid changes before finalizing, so the layout is arranged for the panels that are kept.
+  const failureCountBeforeValidation = failures.length;
   nextDashboardData = validate(nextDashboardData);
-  // Validation returns the original dashboard when it discarded all changes. Finalizing must not then
-  // add changes of its own, such as a default time range.
-  const allChangesDiscarded = nextDashboardData === originalDashboardData;
+  // When validation discarded every change, finalizing must not add changes of its own, such as a
+  // default time range. A call without discarded changes, e.g. a layout request only, is finalized.
+  const allChangesDiscarded =
+    failures.length > failureCountBeforeValidation &&
+    isEqual(nextDashboardData, originalDashboardData);
 
   if (finalizeDashboard && !allChangesDiscarded) {
     nextDashboardData = validate(
