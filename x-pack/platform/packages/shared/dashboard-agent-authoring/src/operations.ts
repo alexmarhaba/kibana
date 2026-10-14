@@ -128,8 +128,11 @@ export const executeDashboardOperations = async ({
 
   // Discard invalid changes before finalizing, so the layout is arranged for the panels that are kept.
   nextDashboardData = validate(nextDashboardData);
+  // Validation returns the original dashboard when it discarded all changes. Finalizing must not then
+  // add changes of its own, such as a default time range.
+  const allChangesDiscarded = nextDashboardData === originalDashboardData;
 
-  if (finalizeDashboard) {
+  if (finalizeDashboard && !allChangesDiscarded) {
     nextDashboardData = validate(
       await finalizeDashboard(nextDashboardData, {
         originalDashboardData,
