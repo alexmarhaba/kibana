@@ -14,6 +14,7 @@ import {
 } from '@kbn/agent-builder-dashboards-common';
 import { getSectionIdByPanelId, getSectionsById } from '../dashboard_state';
 import { getErrorMessage } from '../utils';
+import type { PanelAuthoringNote } from '../resolve_panel';
 import {
   getLensChartType,
   getMarkdownHeight,
@@ -64,45 +65,34 @@ interface ContainerState {
   widgets: Array<AttachmentPanel | DashboardSection>;
 }
 
-interface ArrangeLayoutParams {
+interface PlannedContainer {
+  container: ContainerState;
+  layoutContainer: LayoutContainer;
+}
+
+interface PlanLayoutParams {
   originalDashboardData: DashboardAttachmentData;
   dashboardData: DashboardAttachmentData;
   /** Existing panels whose content was edited in this call. */
   editedPanelIds: ReadonlySet<string>;
-  /** Layout instructions; when set, every container is arranged again. */
-  instructions?: string;
-  /** The user's earlier layout overrides of the defaults, which still apply. */
-  layoutOverrides?: string;
-  authoringNotesByPanelId: ReadonlyMap<string, string>;
-  arrangeLayout?: ArrangeDashboardLayout;
-  logger: Logger;
+  panelAuthoringNotes: readonly PanelAuthoringNote[];
+  /** Arranges every container again, not only the changed ones. */
+  includeUnchanged: boolean;
 }
 
-export interface ArrangedDashboardLayout {
-  dashboardData: DashboardAttachmentData;
-  /** The user's layout overrides of the defaults, to pass to the next call. */
-  layoutOverrides?: string;
-}
-
-/**
- * Places the panels and sections a change touched. Containers with added, moved, removed,
- * or edited items (or every container, when `instructions` are given) are arranged into rows by the
- * injected `arrangeLayout` call; code turns the rows into grid positions. Without the call, or when
- * it fails, existing items keep their position and new ones are packed below them. The layout
- * call also updates the user's layout overrides.
- */
-export const arrangeDashboardLayout = async ({
+/** Containers with added, moved, removed, or edited items, as the layout step sees them. */
+const planLayout = ({
   originalDashboardData,
   dashboardData,
   editedPanelIds,
-  instructions,
-  layoutOverrides,
-  authoringNotesByPanelId,
-  arrangeLayout,
-  logger,
-}: ArrangeLayoutParams): Promise<ArrangedDashboardLayout> => {
+  panelAuthoringNotes,
+  includeUnchanged,
+}: PlanLayoutParams): PlannedContainer[] => {
   const originalContainerKeyByPanelId = getSectionIdByPanelId(originalDashboardData);
   const originalSectionIds = new Set(getSectionsById(originalDashboardData).keys());
+  const authoringNotesByPanelId = new Map(
+    panelAuthoringNotes.map(({ panelId, authoringNote }) => [panelId, authoringNote])
+  );
 
   const isNewItem = (widget: AttachmentPanel | DashboardSection, key: ContainerKey): boolean =>
     isSection(widget)
@@ -126,17 +116,13 @@ export const arrangeDashboardLayout = async ({
     );
   };
 
-  const dirtyContainers = containers.filter(
+  const changedContainers = containers.filter(
     ({ key, widgets }) =>
-      instructions !== undefined ||
+      includeUnchanged ||
       hasRemovedItems(key, widgets) ||
       widgets.some(({ id }) => editedPanelIds.has(id)) ||
       widgets.some((widget) => isNewItem(widget, key))
   );
-
-  if (dirtyContainers.length === 0) {
-    return { dashboardData, layoutOverrides };
-  }
 
   const toLayoutItem = (
     widget: AttachmentPanel | DashboardSection,
@@ -181,14 +167,72 @@ export const arrangeDashboardLayout = async ({
     ];
   };
 
-  const layoutContainers: LayoutContainer[] = dirtyContainers.map((container) => ({
-    section: container.key,
-    ...(container.title !== undefined ? { title: container.title } : {}),
-    items: getOrderedWidgets(container).map((widget) => toLayoutItem(widget, container.key)),
-    currentRows: groupIntoRows(
-      container.widgets.filter((widget) => !isNewItem(widget, container.key))
-    ),
+  return changedContainers.map((container) => ({
+    container,
+    layoutContainer: {
+      section: container.key,
+      ...(container.title !== undefined ? { title: container.title } : {}),
+      items: getOrderedWidgets(container).map((widget) => toLayoutItem(widget, container.key)),
+      currentRows: groupIntoRows(
+        container.widgets.filter((widget) => !isNewItem(widget, container.key))
+      ),
+    },
   }));
+};
+
+/**
+ * Keeps existing items where they are and packs items added to or moved into a container below
+ * them, at their current size, so every dashboard has a valid layout without a model call.
+ */
+export const placeNewItems = ({
+  originalDashboardData,
+  dashboardData,
+}: {
+  originalDashboardData: DashboardAttachmentData;
+  dashboardData: DashboardAttachmentData;
+}): DashboardAttachmentData => {
+  const placements: Placements = new Map();
+  const plannedContainers = planLayout({
+    originalDashboardData,
+    dashboardData,
+    editedPanelIds: new Set(),
+    panelAuthoringNotes: [],
+    includeUnchanged: false,
+  });
+  for (const { container, layoutContainer } of plannedContainers) {
+    placeAfterExistingItems(container, layoutContainer.items).forEach((grid, id) =>
+      placements.set(id, grid)
+    );
+  }
+  return applyPlacements(dashboardData, placements);
+};
+
+interface ArrangeLayoutParams extends Omit<PlanLayoutParams, 'includeUnchanged'> {
+  /** The user's own arrangement or size request; when set, every container is arranged again. */
+  instructions?: string;
+  arrangeLayout: ArrangeDashboardLayout;
+  logger: Logger;
+}
+
+/**
+ * Arranges the containers a change touched (or every container, when `instructions` are given)
+ * into rows with the injected `arrangeLayout` call; code turns the rows into grid positions. When
+ * the call fails or skips a container, that container keeps its current layout.
+ */
+export const arrangeDashboardLayout = async ({
+  instructions,
+  arrangeLayout,
+  logger,
+  ...planParams
+}: ArrangeLayoutParams): Promise<DashboardAttachmentData> => {
+  const { dashboardData } = planParams;
+  const plannedContainers = planLayout({
+    ...planParams,
+    includeUnchanged: instructions !== undefined,
+  });
+  if (plannedContainers.length === 0) {
+    return dashboardData;
+  }
 
   const arrangement = await requestArrangement({
     arrangeLayout,
@@ -197,27 +241,21 @@ export const arrangeDashboardLayout = async ({
       dashboardTitle: dashboardData.title,
       ...(dashboardData.description ? { dashboardDescription: dashboardData.description } : {}),
       ...(instructions !== undefined ? { instructions } : {}),
-      ...(layoutOverrides ? { layoutOverrides } : {}),
-      containers: layoutContainers,
+      containers: plannedContainers.map(({ layoutContainer }) => layoutContainer),
     },
   });
+  if (!arrangement) {
+    return dashboardData;
+  }
 
   const placements: Placements = new Map();
-  dirtyContainers.forEach((container, containerIndex) => {
-    const { items } = layoutContainers[containerIndex];
-    const rows = arrangement?.containers.find(({ section }) => section === container.key)?.rows;
-    const containerPlacements = rows
-      ? placeRows(items, rows)
-      : placeAfterExistingItems(container, items);
-    containerPlacements.forEach((grid, id) => placements.set(id, grid));
-  });
-
-  const nextLayoutOverrides = arrangement?.layoutOverrides ?? layoutOverrides;
-
-  return {
-    dashboardData: applyPlacements(dashboardData, placements),
-    layoutOverrides: nextLayoutOverrides || undefined,
-  };
+  for (const { container, layoutContainer } of plannedContainers) {
+    const rows = arrangement.containers.find(({ section }) => section === container.key)?.rows;
+    if (rows) {
+      placeRows(layoutContainer.items, rows).forEach((grid, id) => placements.set(id, grid));
+    }
+  }
+  return applyPlacements(dashboardData, placements);
 };
 
 /** Ids of widgets grouped by the `y` they start at, in reading order. */
@@ -235,13 +273,10 @@ const requestArrangement = async ({
   request,
   logger,
 }: {
-  arrangeLayout?: ArrangeDashboardLayout;
+  arrangeLayout: ArrangeDashboardLayout;
   request: Parameters<ArrangeDashboardLayout>[0];
   logger: Logger;
 }): Promise<LayoutArrangement | undefined> => {
-  if (!arrangeLayout) {
-    return undefined;
-  }
   try {
     const result = layoutArrangementSchema.safeParse(await arrangeLayout(request));
     if (result.success) {
@@ -249,7 +284,7 @@ const requestArrangement = async ({
     }
     logger.warn(`Dashboard layout returned an invalid arrangement: ${result.error.message}`);
   } catch (error) {
-    logger.warn(`Dashboard layout failed, using the default layout: ${getErrorMessage(error)}`);
+    logger.warn(`Dashboard layout failed, keeping the current layout: ${getErrorMessage(error)}`);
   }
   return undefined;
 };

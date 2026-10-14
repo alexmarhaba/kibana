@@ -6,9 +6,9 @@
  */
 
 export { dashboardOperationSchema, executeDashboardOperations } from './src/operations';
-export type { FinalizeDashboard } from './src/operations';
+export type { FinalizeDashboard, FinalizeDashboardContext } from './src/operations';
 
-export { buildLayoutPrompt, layoutArrangementSchema } from './src/layout';
+export { arrangeDashboardLayout, buildLayoutPrompt, layoutArrangementSchema } from './src/layout';
 export type { ArrangeDashboardLayout, LayoutArrangement, LayoutRequest } from './src/layout';
 
 export { getErrorMessage, hasValidCreateMetadataOperations } from './src/utils';

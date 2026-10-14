@@ -10,8 +10,6 @@ import type { SizeClassName } from './panel_sizes';
 
 export const GRID_COLUMNS = 48;
 
-export const MAX_LAYOUT_OVERRIDES_LENGTH = 1000;
-
 export interface PanelSize {
   w: number;
   h: number;
@@ -64,8 +62,6 @@ export interface LayoutRequest {
   dashboardDescription?: string;
   /** Layout instructions from the user, when the call asked for a relayout. */
   instructions?: string;
-  /** The user's earlier layout and size overrides of the defaults, which still apply. */
-  layoutOverrides?: string;
   containers: LayoutContainer[];
 }
 
@@ -107,19 +103,12 @@ export const layoutArrangementSchema = z.object({
       })
     )
     .max(200),
-  layoutOverrides: z
-    .string()
-    .max(MAX_LAYOUT_OVERRIDES_LENGTH)
-    .optional()
-    .describe(
-      'Only when instructions or layoutOverrides are given: lasting exceptions of the user to the default layout and sizes, or an empty string when none apply.'
-    ),
 });
 
 export type LayoutArrangement = z.infer<typeof layoutArrangementSchema>;
 
 /**
  * Arranges the containers of a layout request into rows. Injected by the host, which runs it as a
- * separate model call. Errors and invalid output fall back to a deterministic layout.
+ * separate model call. On errors and invalid output, the containers keep their current layout.
  */
 export type ArrangeDashboardLayout = (request: LayoutRequest) => Promise<LayoutArrangement>;

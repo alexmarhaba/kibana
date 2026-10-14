@@ -19,6 +19,7 @@ import {
 } from '@kbn/agent-builder-dashboards-common';
 
 import {
+  arrangeDashboardLayout,
   executeDashboardOperations,
   getErrorMessage,
   hasValidCreateMetadataOperations,
@@ -34,7 +35,6 @@ import { retrieveLatestVersion } from './attachment_state';
 import { createAttachmentPanelResolver } from './resolvers/attachment_panel_resolver';
 import { createControlFieldCapabilitiesResolver } from './resolvers/control_field_capabilities_resolver';
 import { createLayoutArranger } from './layout_arranger';
-import { findLayoutOverrides } from './layout_overrides';
 import { createPanelResolver } from './resolvers/panel_resolver';
 import { applyDefaultDashboardTimeRange } from './time_range';
 
@@ -64,7 +64,7 @@ const generateDashboardSchema = z.object({
     .max(1000)
     .optional()
     .describe(
-      'The user\'s own request about arrangement or size, e.g. "put the metrics in one row" or "make the table full width". Remembered for later calls. Omit it unless the user asked: panels are placed and sized automatically.'
+      'The user\'s own request about arrangement or size, e.g. "put the metrics in one row" or "make the table full width". Omit it unless the user asked: panels are placed and sized automatically.'
     ),
 });
 
@@ -149,7 +149,7 @@ Panel positions and sizes are set automatically after the operations run. Set \`
     schema: generateDashboardSchema,
     handler: async (
       { dashboardAttachmentId: previousAttachmentId, operations, layout },
-      { logger, attachments, events, esClient, modelProvider, resultStore }
+      { logger, attachments, events, esClient, modelProvider }
     ) => {
       try {
         const latestVersion = retrieveLatestVersion(attachments, previousAttachmentId);
@@ -161,34 +161,34 @@ Panel positions and sizes are set automatically after the operations run. Set \`
         }
 
         const dashboardAttachmentId = previousAttachmentId ?? uuidv4();
-        const { dashboardData, failures, panelAuthoringNotes, layoutOverrides } =
-          await executeDashboardOperations({
-            dashboardData: latestVersion?.data,
-            operations,
-            layout,
-            layoutOverrides: previousAttachmentId
-              ? await findLayoutOverrides(resultStore, previousAttachmentId)
-              : undefined,
-            arrangeLayout: createLayoutArranger({ modelProvider }),
+        const { dashboardData, failures, panelAuthoringNotes } = await executeDashboardOperations({
+          dashboardData: latestVersion?.data,
+          operations,
+          logger,
+          resolvePanelContent: createPanelResolver({
             logger,
-            resolvePanelContent: createPanelResolver({
-              logger,
-              modelProvider,
-              events,
-              esClient,
-            }),
-            resolveAttachmentPanel: createAttachmentPanelResolver({ attachments }),
-            resolveControlFieldCapabilities: createControlFieldCapabilitiesResolver({
-              esClient: esClient.asCurrentUser,
-            }),
-            finalizeDashboard: (generatedDashboardData) =>
-              applyDefaultDashboardTimeRange({
+            modelProvider,
+            events,
+            esClient,
+          }),
+          resolveAttachmentPanel: createAttachmentPanelResolver({ attachments }),
+          resolveControlFieldCapabilities: createControlFieldCapabilitiesResolver({
+            esClient: esClient.asCurrentUser,
+          }),
+          finalizeDashboard: async (generatedDashboardData, changes) =>
+            arrangeDashboardLayout({
+              ...changes,
+              dashboardData: await applyDefaultDashboardTimeRange({
                 dashboardData: generatedDashboardData,
                 esClient,
                 logger,
               }),
-            validateDashboard: await getValidateDashboard(),
-          });
+              instructions: layout,
+              arrangeLayout: createLayoutArranger({ modelProvider }),
+              logger,
+            }),
+          validateDashboard: await getValidateDashboard(),
+        });
 
         const toDashboardResult = (attachmentId: string, version: number) => ({
           results: [
@@ -207,7 +207,6 @@ Panel positions and sizes are set automatically after the operations run. Set \`
                     ])
                   )
                 ),
-                layout_overrides: layoutOverrides,
                 failures: failures.length > 0 ? failures : undefined,
               },
             },

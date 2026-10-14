@@ -67,7 +67,6 @@ const callHandler = async (dashboardAttachmentId?: string) => {
     },
     events: { sendUiEvent },
     esClient: { asCurrentUser: {} },
-    resultStore: { listEntries: jest.fn(async () => []) },
   };
   const ret = await tool.handler(
     { dashboardAttachmentId, operations: [] } as unknown as Parameters<typeof tool.handler>[0],
@@ -83,7 +82,11 @@ describe('generateDashboardTool handler', () => {
     mockHasValidCreateMetadataOperations.mockReturnValue(true);
     mockExecuteDashboardOperations.mockImplementation(async ({ finalizeDashboard }) => ({
       dashboardData: finalizeDashboard
-        ? await finalizeDashboard(generatedDashboard)
+        ? await finalizeDashboard(generatedDashboard, {
+            originalDashboardData: generatedDashboard,
+            editedPanelIds: new Set(),
+            panelAuthoringNotes: [],
+          })
         : generatedDashboard,
       failures: [],
       panelAuthoringNotes: [],

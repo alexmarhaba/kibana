@@ -12,7 +12,7 @@ const LAYOUT_SYSTEM_PROMPT = `You arrange the panels of a Kibana dashboard on a 
 
 ## Priorities
 
-1. The user's layout and size requests: \`instructions\` (new) and \`layoutOverrides\` (earlier, still in force). When they conflict, \`instructions\` win.
+1. The user's layout and size request in \`instructions\`.
 2. Few gaps: the widths of a row add up to 48. Never leave an empty row.
 3. Panel sizes within the ranges below.
 4. Stability: change as little as possible of the current arrangement.
@@ -35,18 +35,7 @@ Markdown panels list their text length in \`textLines\`; code sets the height of
 
 ## New items
 
-Place new items by purpose, next to related items: in a row with room, or in a new row. In a new dashboard, lead with a markdown introduction when there is one, then metrics and gauges, then trends, then breakdowns and tables. At the top level, put panels above sections. A section always takes a row of its own; its \`w\` and the row \`h\` are ignored.
-
-## Layout overrides
-
-When \`instructions\` or \`layoutOverrides\` are given, also return \`layoutOverrides\`: the user's lasting exceptions to the default placement and sizing, which it would otherwise undo, so later calls keep honoring them. Keep only:
-
-- Sizes outside the range of a panel's class, or a fixed size, e.g. the bar chart "errors-by-code is full width".
-- Groupings to keep when panels are added or removed, e.g. "kpi-requests, kpi-errors and kpi-hosts share the first row" or "error-rate sits right of latency".
-
-Leave out one-time moves and reorders, e.g. "put the reference section first": the current arrangement already keeps them. Also leave out what matches the defaults, notes about content, and statements that other items keep their place.
-
-Start from the earlier \`layoutOverrides\` and apply the instructions. Rewrite or drop any override that no longer applies: the user changed, replaced, or reverted it (e.g. "undo"), or a panel or section it names was removed or moved to another container. Otherwise return the earlier \`layoutOverrides\` unchanged. Name panels and sections by id, since titles may be missing or change. Return an empty string when no override applies. Without \`instructions\` or \`layoutOverrides\`, omit \`layoutOverrides\`.`;
+Place new items by purpose, next to related items: in a row with room, or in a new row. In a new dashboard, lead with a markdown introduction when there is one, then metrics and gauges, then trends, then breakdowns and tables. At the top level, put panels above sections. A section always takes a row of its own; its \`w\` and the row \`h\` are ignored.`;
 
 /** Builds the messages of the layout call for a layout request. */
 export const buildLayoutPrompt = (request: LayoutRequest): { system: string; user: string } => ({

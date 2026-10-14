@@ -27,6 +27,7 @@ import { VEGA_VIS_TYPE } from '@kbn/agent-builder-visualizations-common';
 import { DASHBOARD_OPERATION_FAILURE_TYPES } from './failure_types';
 import type { ControlFieldCapability, ResolveControlFieldCapabilities } from './operations/types';
 import type { ValidateDashboard } from './validate_dashboard';
+import { arrangeDashboardLayout } from './layout';
 
 const usable = (type: string): ControlFieldCapability => ({ status: 'usable', type });
 const NOT_AGGREGATABLE: ControlFieldCapability = { status: 'not_aggregatable' };
@@ -1223,7 +1224,7 @@ describe('executeDashboardOperations', () => {
   });
 
   describe('update_panel_layouts', () => {
-    it('applies the sizes the layout step returns', async () => {
+    it('applies the sizes the layout step in finalizeDashboard returns', async () => {
       const result = await executeDashboardOperations({
         dashboardData: {
           title: 'Test dashboard',
@@ -1233,22 +1234,26 @@ describe('executeDashboardOperations', () => {
           ],
         },
         operations: [],
-        layout: 'make section-panel-1 smaller',
         logger,
-        arrangeLayout: async () => ({
-          containers: [
-            { section: null, rows: [{ h: 1, items: [{ id: 'section-a', w: 48 }] }] },
-            {
-              section: 'section-a',
-              rows: [{ h: 6, items: [{ id: 'section-panel-1', w: 12 }] }],
-            },
-          ],
-          layoutOverrides: 'section-panel-1 is 12 wide and 6 high.',
-        }),
+        finalizeDashboard: (dashboardData, changes) =>
+          arrangeDashboardLayout({
+            ...changes,
+            dashboardData,
+            instructions: 'make section-panel-1 smaller',
+            logger,
+            arrangeLayout: async () => ({
+              containers: [
+                { section: null, rows: [{ h: 1, items: [{ id: 'section-a', w: 48 }] }] },
+                {
+                  section: 'section-a',
+                  rows: [{ h: 6, items: [{ id: 'section-panel-1', w: 12 }] }],
+                },
+              ],
+            }),
+          }),
       });
 
       expect(result.failures).toEqual([]);
-      expect(result.layoutOverrides).toBe('section-panel-1 is 12 wide and 6 high.');
       expect(getSections(result.dashboardData.panels)[0].panels).toEqual([
         expect.objectContaining({
           id: 'section-panel-1',
