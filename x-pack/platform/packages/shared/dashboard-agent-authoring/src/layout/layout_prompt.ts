@@ -38,6 +38,14 @@ Prefer widths that divide 48 evenly: 6, 8, 12, 24, 48.
 - Fill rows left to right from \`x: 0\`; the next panel's \`x\` is the previous \`x + w\`. \`x + w\` never exceeds 48.
 - The next row's \`y\` is the previous row's \`y + max(h)\`. Panels in one row share the same \`h\`.
 - The widths of a row add up to 48. After a removal or resize, move panels up or widen them to close the gap.
+
+## Reflow
+
+Panels are listed in reading order (by \`y\`, then \`x\`). When a panel moves, grows, shrinks, or is added or removed, reflow the whole container, not only its neighbours:
+
+- Every panel below the change moves by the same number of rows, so rows further down stay intact. If you push a row down by 7, push every row under it down by 7 too.
+- Panels displaced from a row go to a row of their own or fill a gap; they never land on top of another panel.
+- Before answering, check every row from top to bottom: no two panels overlap (same rows and overlapping columns), and no row has an empty gap that a panel below could fill.
 - Place new panels by purpose, next to related panels. In a new dashboard, lead with a markdown introduction when there is one, then metrics and gauges, then trends, then breakdowns and tables.
 
 ## Sections

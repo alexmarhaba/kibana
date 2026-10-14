@@ -77,25 +77,31 @@ export const arrangeDashboardLayout = async ({
     contentChanged: editedPanelIds.has(id),
   });
 
+  const toLayoutPanels = (panels: AttachmentPanel[]): LayoutPanel[] =>
+    [...panels].sort(byReadingOrder).map(toLayoutPanel);
+
   const request: LayoutRequest = {
     dashboardTitle: dashboardData.title,
     ...(dashboardData.description ? { dashboardDescription: dashboardData.description } : {}),
     ...(instructions !== undefined ? { instructions } : {}),
-    panels: dashboardData.panels
-      .filter((widget): widget is AttachmentPanel => !isSection(widget))
-      .map(toLayoutPanel),
+    panels: toLayoutPanels(
+      dashboardData.panels.filter((widget): widget is AttachmentPanel => !isSection(widget))
+    ),
     sections: dashboardData.panels.filter(isSection).map((section) => ({
       id: section.id,
       title: section.title,
       y: section.grid.y,
       isNew: !originalSectionIds.has(section.id),
-      panels: section.panels.map(toLayoutPanel),
+      panels: toLayoutPanels(section.panels),
     })),
   };
 
   const arrangement = await requestArrangement({ arrangeLayout, request, logger });
   return arrangement ? applyArrangement(dashboardData, arrangement) : dashboardData;
 };
+
+const byReadingOrder = (a: AttachmentPanel, b: AttachmentPanel): number =>
+  a.grid.y - b.grid.y || a.grid.x - b.grid.x;
 
 const requestArrangement = async ({
   arrangeLayout,
